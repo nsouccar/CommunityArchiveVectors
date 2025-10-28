@@ -1,9 +1,217 @@
 import express from "express";
+import { createClient } from "@supabase/supabase-js";
+import OpenAI from "openai";
+import { writeFile } from "fs/promises";
+import { join } from "path";
 
 const app = express();
 
+// Initialize Supabase client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error("Missing SUPABASE_URL or SUPABASE_KEY in environment variables");
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Initialize OpenAI client
+const openaiApiKey = process.env.OPENAI_API_KEY;
+
+if (!openaiApiKey) {
+  throw new Error("Missing OPENAI_API_KEY in environment variables");
+}
+
+const openai = new OpenAI({
+
+  apiKey: openaiApiKey,
+  project: "proj_d2VDjwr2i3cNRCIHdEBGhVbP"
+});
+
+// Type definitions
+interface Tweet {
+  tweet_id: string;
+  full_text: string;
+  reply_to_tweet_id: string | null;
+  created_at: string;
+  account_id: string;
+  retweet_count: number;
+  favorite_count: number;
+}
+
 app.get("/hello", (_, res) => {
   res.send("Hello Vite + TypeScript!");
+});
+
+// Helper function to build thread context for a tweet
+async function buildThreadContext(tweetId: string, tweetsMap: Map<string, Tweet>): Promise<string[]> {
+  const thread: string[] = [];
+  let currentId: string | null = tweetId;
+  const visited = new Set<string>();
+
+  // Traverse up the reply chain to build full context
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const tweet = tweetsMap.get(currentId);
+
+    if (!tweet) break;
+
+    thread.unshift(tweet.full_text); // Add to beginning (root first)
+    currentId = tweet.reply_to_tweet_id;
+  }
+
+  return thread;
+}
+
+// Route to fetch tweets from Supabase
+app.get("/tweets", async (_, res) => {
+  try {
+    // Get total count
+    const { count, error: countError } = await supabase
+      .from("tweets")
+      .select("*", { count: "exact", head: true });
+
+    if (countError) {
+      console.error("Error counting tweets:", countError);
+    } else {
+      console.log(`Total tweets in database: ${count}`);
+    }
+
+    // Get actual data
+    const { data, error } = await supabase
+      .from("tweets")
+      .select("*");
+
+    if (error) {
+      console.error("Error fetching tweets:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ tweets: data, count: data?.length || 0, total_in_db: count });
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Helper function to sleep for rate limiting
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Route to generate embeddings for 20k tweets with rate limiting
+app.get("/generate-embeddings", async (_, res) => {
+  try {
+    console.log("Fetching 100 tweets from database...");
+
+    // Fetch 100 tweets for testing
+    const { data: tweets, error } = await supabase
+      .from("tweets")
+      .select("tweet_id, full_text, reply_to_tweet_id, created_at, account_id, retweet_count, favorite_count")
+      .limit(100);
+
+    if (error) {
+      console.error("Error fetching tweets:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    if (!tweets || tweets.length === 0) {
+      return res.status(404).json({ error: "No tweets found" });
+    }
+
+    console.log(`Fetched ${tweets.length} tweets. Building thread contexts...`);
+
+    // Create a map for quick lookup
+    const tweetsMap = new Map<string, Tweet>();
+    tweets.forEach((tweet) => {
+      tweetsMap.set(tweet.tweet_id, tweet as Tweet);
+    });
+
+    // Build thread contexts and prepare for embedding
+    const embeddingsData = [];
+    let processedCount = 0;
+
+    // Rate limiting: Process in batches to stay under 100 RPM
+    const BATCH_SIZE = 90; // Process 90 at a time (leave buffer for safety)
+    const BATCH_DELAY = 60000; // 60 seconds between batches = ~90/min max
+
+    for (let i = 0; i < tweets.length; i += BATCH_SIZE) {
+      const batch = tweets.slice(i, i + BATCH_SIZE);
+      const batchPromises = [];
+
+      for (const tweet of batch) {
+        const threadContext = await buildThreadContext(tweet.tweet_id, tweetsMap);
+        const contextText = threadContext.join("\n\n");
+
+        // Find root tweet ID
+        let rootId = tweet.tweet_id;
+        let currentTweet = tweet;
+        while (currentTweet.reply_to_tweet_id && tweetsMap.has(currentTweet.reply_to_tweet_id)) {
+          rootId = currentTweet.reply_to_tweet_id;
+          currentTweet = tweetsMap.get(currentTweet.reply_to_tweet_id)!;
+        }
+
+        // Create promise for embedding generation
+        const embeddingPromise = openai.embeddings
+          .create({
+            model: "text-embedding-3-small",
+            input: contextText,
+          })
+          .then((embeddingResponse) => {
+            const embedding = embeddingResponse.data[0].embedding;
+
+            return {
+              tweet_id: tweet.tweet_id,
+              full_text: tweet.full_text,
+              thread_context: contextText,
+              thread_root_id: rootId,
+              depth: threadContext.length - 1,
+              is_root: tweet.reply_to_tweet_id === null,
+              embedding: embedding,
+              metadata: {
+                created_at: tweet.created_at,
+                account_id: tweet.account_id,
+                retweet_count: tweet.retweet_count,
+                favorite_count: tweet.favorite_count,
+              },
+            };
+          });
+
+        batchPromises.push(embeddingPromise);
+      }
+
+      // Wait for all embeddings in this batch to complete
+      const batchResults = await Promise.all(batchPromises);
+      embeddingsData.push(...batchResults);
+
+      processedCount += batch.length;
+      console.log(`Processed ${processedCount}/${tweets.length} tweets...`);
+
+      // Rate limiting: Wait before next batch (unless we're done)
+      if (i + BATCH_SIZE < tweets.length) {
+        await sleep(BATCH_DELAY);
+      }
+    }
+
+    console.log("Saving embeddings to file...");
+
+    // Save to JSON file
+    const outputPath = join(process.cwd(), "embeddings_output.json");
+    await writeFile(outputPath, JSON.stringify(embeddingsData, null, 2));
+
+    console.log(`Embeddings saved to ${outputPath}`);
+
+    return res.json({
+      success: true,
+      count: embeddingsData.length,
+      outputPath,
+      message: "Embeddings generated and saved successfully",
+    });
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error", details: String(err) });
+  }
 });
 
 app.listen(3000, () => {
