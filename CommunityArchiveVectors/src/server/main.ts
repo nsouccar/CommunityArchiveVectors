@@ -94,7 +94,7 @@ app.get("/tweets", async (_, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
-
+console.log("hello")
 // Helper function to sleep for rate limiting
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
