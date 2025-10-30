@@ -2,6 +2,7 @@ import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { VoyageAIClient } from "voyageai";
 import { writeFile } from "fs/promises";
 import { join } from "path";
 
@@ -38,6 +39,15 @@ if (!geminiApiKey) {
 }
 
 const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
+
+// Initialize Voyage AI client
+const voyageApiKey = process.env.VOYAGE_API_KEY;
+
+if (!voyageApiKey) {
+  console.warn("Missing VOYAGE_API_KEY - Voyage AI embeddings route will not work");
+}
+
+const voyageClient = voyageApiKey ? new VoyageAIClient({ apiKey: voyageApiKey }) : null;
 
 // Type definitions
 interface Tweet {
@@ -337,6 +347,133 @@ app.get("/generate-embeddings-gemini", async (_, res) => {
       outputPath,
       model: "text-embedding-004",
       message: "Gemini embeddings generated and saved successfully",
+    });
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error", details: String(err) });
+  }
+});
+
+// Route to generate Voyage AI embeddings for 10,000 tweets with rate limiting
+app.get("/generate-embeddings-voyage", async (_, res) => {
+  try {
+    if (!voyageClient) {
+      return res.status(500).json({ error: "Voyage AI API key not configured" });
+    }
+
+    console.log("Fetching 10,000 tweets from database...");
+
+    // Fetch 10,000 tweets
+    const { data: tweets, error } = await supabase
+      .from("tweets")
+      .select("tweet_id, full_text, reply_to_tweet_id, created_at, account_id, retweet_count, favorite_count")
+      .limit(10000);
+
+    if (error) {
+      console.error("Error fetching tweets:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    if (!tweets || tweets.length === 0) {
+      return res.status(404).json({ error: "No tweets found" });
+    }
+
+    console.log(`Fetched ${tweets.length} tweets. Building thread contexts...`);
+
+    // Create a map for quick lookup
+    const tweetsMap = new Map<string, Tweet>();
+    tweets.forEach((tweet) => {
+      tweetsMap.set(tweet.tweet_id, tweet as Tweet);
+    });
+
+    // Build thread contexts and prepare for embedding
+    const embeddingsData = [];
+    let processedCount = 0;
+
+    // Voyage AI rate limits: Tier 1 = 2000 RPM
+    // With 2000 RPM, we can do 1 request every 30ms
+    // Using batch size 128 to maximize throughput while staying well under limits
+    const BATCH_SIZE = 128; // Voyage can handle up to 128 inputs per request
+    const BATCH_DELAY = 100; // 100ms between batches = 600 requests/min (well under 2000 RPM)
+
+    for (let i = 0; i < tweets.length; i += BATCH_SIZE) {
+      const batch = tweets.slice(i, i + BATCH_SIZE);
+
+      // Build all thread contexts for this batch
+      const batchInputs = [];
+      const batchMetadata = [];
+
+      for (const tweet of batch) {
+        const threadContext = await buildThreadContext(tweet.tweet_id, tweetsMap);
+        const contextText = threadContext.join("\n\n");
+
+        // Find root tweet ID
+        let rootId = tweet.tweet_id;
+        let currentTweet = tweet;
+        while (currentTweet.reply_to_tweet_id && tweetsMap.has(currentTweet.reply_to_tweet_id)) {
+          rootId = currentTweet.reply_to_tweet_id;
+          currentTweet = tweetsMap.get(currentTweet.reply_to_tweet_id)!;
+        }
+
+        batchInputs.push(contextText);
+        batchMetadata.push({
+          tweet_id: tweet.tweet_id,
+          full_text: tweet.full_text,
+          thread_context: contextText,
+          thread_root_id: rootId,
+          depth: threadContext.length - 1,
+          is_root: tweet.reply_to_tweet_id === null,
+          metadata: {
+            created_at: tweet.created_at,
+            account_id: tweet.account_id,
+            retweet_count: tweet.retweet_count,
+            favorite_count: tweet.favorite_count,
+            model: "voyage-3",
+          },
+        });
+      }
+
+      // Call Voyage AI API with batch of inputs
+      console.log(`Calling Voyage AI for batch ${Math.floor(i / BATCH_SIZE) + 1}...`);
+      const embeddingResponse = await voyageClient.embed({
+        input: batchInputs,
+        model: "voyage-3", // Using voyage-3 as a good general-purpose model
+        inputType: "document", // These are documents, not queries
+      });
+
+      // Combine embeddings with metadata
+      if (embeddingResponse.data) {
+        for (let j = 0; j < embeddingResponse.data.length; j++) {
+          embeddingsData.push({
+            ...batchMetadata[j],
+            embedding: embeddingResponse.data[j].embedding,
+          });
+        }
+      }
+
+      processedCount += batch.length;
+      console.log(`Processed ${processedCount}/${tweets.length} tweets...`);
+
+      // Rate limiting: Wait before next batch (unless we're done)
+      if (i + BATCH_SIZE < tweets.length) {
+        await sleep(BATCH_DELAY);
+      }
+    }
+
+    console.log("Saving embeddings to file...");
+
+    // Save to JSON file with Voyage-specific name
+    const outputPath = join(process.cwd(), "embeddings_output_voyage.json");
+    await writeFile(outputPath, JSON.stringify(embeddingsData, null, 2));
+
+    console.log(`Voyage AI embeddings saved to ${outputPath}`);
+
+    return res.json({
+      success: true,
+      count: embeddingsData.length,
+      outputPath,
+      model: "voyage-3",
+      message: "Voyage AI embeddings generated and saved successfully",
     });
   } catch (err) {
     console.error("Unexpected error:", err);
