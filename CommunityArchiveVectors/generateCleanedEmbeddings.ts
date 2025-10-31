@@ -32,7 +32,6 @@ interface Tweet {
   reply_to_tweet_id: string | null;
   created_at: string;
   account_id: string;
-  account_username: string;
   retweet_count: number;
   favorite_count: number;
 }
@@ -88,10 +87,10 @@ function sleep(ms: number): Promise<void> {
 
 async function generateCleanedEmbeddings() {
   try {
-    console.log("Fetching 1,000 tweets from after October 1, 2024...");
+    console.log("Fetching 10,000 tweets from after October 1, 2024...");
 
     // Supabase has a 1000 row limit, so we need to paginate
-    const TWEETS_TARGET = 1000;
+    const TWEETS_TARGET = 10000;
     const PAGE_SIZE = 1000;
     const tweets: Tweet[] = [];
 
@@ -100,7 +99,7 @@ async function generateCleanedEmbeddings() {
 
       const { data, error } = await supabase
         .from("tweets")
-        .select("tweet_id, full_text, reply_to_tweet_id, created_at, account_id, account_username, retweet_count, favorite_count")
+        .select("tweet_id, full_text, reply_to_tweet_id, created_at, account_id, retweet_count, favorite_count")
         .gte("created_at", "2024-10-01T00:00:00Z")
         .order("created_at", { ascending: false })
         .range(i, i + PAGE_SIZE - 1);
@@ -151,7 +150,7 @@ async function generateCleanedEmbeddings() {
 
         const { data: parentTweets, error: parentError} = await supabase
           .from("tweets")
-          .select("tweet_id, full_text, reply_to_tweet_id, created_at, account_id, account_username, retweet_count, favorite_count")
+          .select("tweet_id, full_text, reply_to_tweet_id, created_at, account_id, retweet_count, favorite_count")
           .in("tweet_id", batchIds);
 
         if (parentError) {
@@ -221,7 +220,6 @@ async function generateCleanedEmbeddings() {
               metadata: {
                 created_at: tweet.created_at,
                 account_id: tweet.account_id,
-                account_username: tweet.account_username,
                 retweet_count: tweet.retweet_count,
                 favorite_count: tweet.favorite_count,
               },
