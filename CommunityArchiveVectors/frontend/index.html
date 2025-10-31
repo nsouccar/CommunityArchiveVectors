@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tweet Semantic Search</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .header {
+      text-align: center;
+      color: white;
+      margin-bottom: 40px;
+    }
+
+    .header h1 {
+      font-size: 48px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .header p {
+      font-size: 18px;
+      opacity: 0.9;
+    }
+
+    .stats {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 15px;
+      color: white;
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .search-box {
+      background: white;
+      border-radius: 16px;
+      padding: 30px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      margin-bottom: 30px;
+    }
+
+    .search-input-wrapper {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .search-input {
+      flex: 1;
+      padding: 15px 20px;
+      font-size: 16px;
+      border: 2px solid #e0e0e0;
+      border-radius: 12px;
+      outline: none;
+      transition: border 0.3s;
+    }
+
+    .search-input:focus {
+      border-color: #667eea;
+    }
+
+    .search-button {
+      padding: 15px 40px;
+      font-size: 16px;
+      font-weight: 600;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .search-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    .search-button:active {
+      transform: translateY(0);
+    }
+
+    .search-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .limit-selector {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      color: #666;
+      font-size: 14px;
+    }
+
+    .limit-selector select {
+      padding: 8px 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .results {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .result-card {
+      background: white;
+      border-radius: 12px;
+      padding: 25px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .result-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+    }
+
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .tweet-link {
+      display: inline-block;
+      padding: 8px 16px;
+      background: #1DA1F2;
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+
+    .tweet-link:hover {
+      background: #1a8cd8;
+    }
+
+    .result-number {
+      font-size: 24px;
+      font-weight: 700;
+      color: #667eea;
+    }
+
+    .similarity-badge {
+      display: inline-block;
+      padding: 6px 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .result-text {
+      font-size: 16px;
+      line-height: 1.6;
+      color: #333;
+      margin-bottom: 15px;
+    }
+
+    .thread-context {
+      background: #f5f5f5;
+      border-left: 4px solid #667eea;
+      padding: 15px;
+      margin-bottom: 15px;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #555;
+    }
+
+    .context-label {
+      font-weight: 600;
+      color: #667eea;
+      margin-bottom: 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .context-text {
+      font-style: italic;
+      line-height: 1.5;
+    }
+
+    .result-meta {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      color: #666;
+      font-size: 14px;
+    }
+
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: white;
+      font-size: 18px;
+    }
+
+    .error {
+      background: #ff4444;
+      color: white;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    .no-results {
+      text-align: center;
+      padding: 60px;
+      background: white;
+      border-radius: 12px;
+      color: #666;
+    }
+
+    .no-results h3 {
+      font-size: 24px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🔍 Tweet Search</h1>
+      <p>Semantic search powered by OpenAI & Milvus</p>
+    </div>
+
+    <div class="stats" id="stats">
+      Loading stats...
+    </div>
+
+    <div class="search-box">
+      <div class="search-input-wrapper">
+        <input
+          type="text"
+          id="searchInput"
+          class="search-input"
+          placeholder="Search for tweets... (e.g., 'machine learning', 'startup ideas', 'coding tips')"
+          onkeypress="if(event.key === 'Enter') search()"
+        />
+        <button class="search-button" onclick="search()" id="searchButton">
+          Search
+        </button>
+      </div>
+      <div class="limit-selector">
+        <label for="limitSelect">Results:</label>
+        <select id="limitSelect">
+          <option value="5">5</option>
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="error"></div>
+    <div id="loading"></div>
+    <div class="results" id="results"></div>
+  </div>
+
+  <script>
+    const API_URL = 'http://localhost:3001/api';
+
+    // Load stats on page load
+    async function loadStats() {
+      try {
+        const response = await fetch(`${API_URL}/stats`);
+        const data = await response.json();
+        document.getElementById('stats').innerHTML = `
+          📊 Database contains <strong>${data.totalVectors.toLocaleString()}</strong> tweet embeddings
+        `;
+      } catch (error) {
+        document.getElementById('stats').innerHTML = '⚠️ Could not load stats';
+      }
+    }
+
+    async function search() {
+      const query = document.getElementById('searchInput').value.trim();
+      const limit = document.getElementById('limitSelect').value;
+
+      if (!query) {
+        alert('Please enter a search query');
+        return;
+      }
+
+      // Clear previous results
+      document.getElementById('results').innerHTML = '';
+      document.getElementById('error').innerHTML = '';
+      document.getElementById('loading').innerHTML = '<div class="loading">🔍 Searching...</div>';
+      document.getElementById('searchButton').disabled = true;
+
+      try {
+        const response = await fetch(`${API_URL}/search`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query, limit: parseInt(limit) }),
+        });
+
+        const data = await response.json();
+
+        document.getElementById('loading').innerHTML = '';
+        document.getElementById('searchButton').disabled = false;
+
+        if (data.error) {
+          document.getElementById('error').innerHTML = `
+            <div class="error">
+              ❌ ${data.error}: ${data.message}
+            </div>
+          `;
+          return;
+        }
+
+        displayResults(data.results, query);
+      } catch (error) {
+        document.getElementById('loading').innerHTML = '';
+        document.getElementById('searchButton').disabled = false;
+        document.getElementById('error').innerHTML = `
+          <div class="error">
+            ❌ Failed to search: ${error.message}
+          </div>
+        `;
+      }
+    }
+
+    function displayResults(results, query) {
+      const resultsDiv = document.getElementById('results');
+
+      if (results.length === 0) {
+        resultsDiv.innerHTML = `
+          <div class="no-results">
+            <h3>No results found</h3>
+            <p>Try a different search query</p>
+          </div>
+        `;
+        return;
+      }
+
+      resultsDiv.innerHTML = results.map((result, index) => `
+        <div class="result-card">
+          <div class="result-header">
+            <div class="result-number">#${index + 1}</div>
+            <div class="similarity-badge">${result.similarity} match</div>
+          </div>
+          ${result.threadContext && result.threadContext !== result.text ? `
+            <div class="thread-context">
+              <div class="context-label">🧵 Thread Context (What was embedded)</div>
+              <div class="context-text">${escapeHtml(result.threadContext)}</div>
+            </div>
+          ` : ''}
+          <div class="result-text"><strong>Tweet:</strong> ${escapeHtml(result.text)}</div>
+          <div class="result-meta">
+            ${result.author ? `<div class="meta-item">👤 @${result.author}</div>` : ''}
+            <div class="meta-item">❤️ ${result.likes} likes</div>
+            <div class="meta-item">🔄 ${result.retweets} retweets</div>
+            ${result.createdAt ? `<div class="meta-item">📅 ${new Date(result.createdAt).toLocaleDateString()}</div>` : ''}
+            <div class="meta-item">📊 Score: ${result.score.toFixed(4)}</div>
+            ${result.depth !== undefined ? `<div class="meta-item">📏 Depth: ${result.depth}</div>` : ''}
+          </div>
+          <div style="margin-top: 15px;">
+            <a href="https://twitter.com/${result.author || 'i'}/status/${result.tweetId}" target="_blank" class="tweet-link">
+              🔗 View on Twitter/X
+            </a>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Load stats on page load
+    loadStats();
+  </script>
+</body>
+</html>
