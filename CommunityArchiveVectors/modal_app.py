@@ -26,7 +26,9 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "faiss-cpu",  # Facebook AI Similarity Search
     "numpy",
     "fastapi",
-    "pydantic"
+    "pydantic",
+    "scikit-learn",  # For KMeans clustering
+    "openai"  # For LLM-based topic naming
 )
 
 # Secrets for API keys (created via: modal secret create tweet-vectors-secrets)
@@ -60,7 +62,8 @@ def generate_voyage_embeddings(texts: List[str]) -> List[List[float]]:
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=60
+    timeout=60,
+    min_containers=1  # Keep warm for faster first search
 )
 def generate_query_embedding(query: str) -> List[float]:
     """Generate Voyage AI embedding for a search query"""
@@ -351,7 +354,8 @@ def sync_tweets_from_supabase(limit: int = 10000):
     image=image,
     secrets=[secrets],
     volumes={"/data": vector_volume},
-    timeout=60
+    timeout=60,
+    min_containers=1  # Keep one instance warm for faster responses
 )
 @modal.asgi_app()
 def web():
@@ -366,6 +370,333 @@ def web():
         query: str
         limit: int = 10
 
+    # Pre-load the vector database once at startup
+    _cached_db = {"db": None}  # Use dict to avoid global/nonlocal issues
+    def get_vector_db():
+        """Get or load the vector database (cached)"""
+        if _cached_db["db"] is None:
+            print("Loading vector database into memory...")
+            db = VectorDB()
+            if not db.load("/data"):
+                return None
+            print(f"Vector database loaded with {len(db.metadata)} tweets")
+            _cached_db["db"] = db
+        return _cached_db["db"]
+
+    # Cache Voyage AI client for fast embedding generation
+    _voyage_client = {"client": None}
+    def get_voyage_client():
+        """Get or create Voyage AI client (cached)"""
+        if _voyage_client["client"] is None:
+            import voyageai
+            print("Initializing Voyage AI client...")
+            _voyage_client["client"] = voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
+        return _voyage_client["client"]
+
+    @web_app.get("/users")
+    async def get_users(min_tweets: int = 30):
+        """Get list of all users in the index with at least min_tweets tweets and meaningful clusters"""
+        # Get cached vector DB
+        db = get_vector_db()
+        if db is None:
+            return {"error": "vector database not initialized"}
+
+        # Count tweets per user
+        from collections import Counter
+        username_counts = Counter()
+        for meta in db.metadata:
+            username = meta.get("account_username")
+            if username:
+                username_counts[username] += 1
+
+        # Filter users with enough tweets (higher threshold since LLM will filter more)
+        # Using min_tweets=30 because after LLM filtering, users need more raw tweets
+        # to end up with meaningful clusters
+        qualified_users = [
+            {"username": username, "tweet_count": count}
+            for username, count in username_counts.items()
+            if count >= min_tweets
+        ]
+
+        # Sort by tweet count (most tweets first)
+        qualified_users.sort(key=lambda x: x["tweet_count"], reverse=True)
+
+        return {
+            "users": qualified_users,
+            "total_users": len(qualified_users),
+            "min_tweets": min_tweets
+        }
+
+    @web_app.get("/user/{username}/topics")
+    async def get_user_topics(username: str, num_topics: int = 5):
+        """Get top topics for a specific user using clustering"""
+        import numpy as np
+        from sklearn.cluster import KMeans
+        from collections import Counter
+        import re
+
+        # Get cached vector DB
+        db = get_vector_db()
+        if db is None:
+            return {"error": "vector database not initialized"}
+
+        def extract_topic_name(cluster_tweets):
+            """Extract topic name from cluster tweets using LLM analysis"""
+            from openai import OpenAI
+
+            # Use up to 10 sample tweets for analysis (to keep prompt size reasonable)
+            sample_tweets = cluster_tweets[:10]
+
+            # Create prompt for LLM
+            tweets_text = "\n".join([f"- {tweet}" for tweet in sample_tweets])
+
+            prompt = f"""Analyze these tweets and create a short, descriptive topic name (2-4 words max) that captures the main theme:
+
+{tweets_text}
+
+Respond with ONLY the topic name, nothing else. Examples of good topic names:
+- "AI & Machine Learning"
+- "Web Development"
+- "Personal Updates"
+- "Tech News & Trends"
+"""
+
+            try:
+                client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",  # Fast and cheap model
+                    messages=[
+                        {"role": "system", "content": "You are a topic classifier that creates short, descriptive topic names from tweet clusters."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=20,
+                    temperature=0.3
+                )
+
+                topic_name = response.choices[0].message.content.strip()
+                # Remove any quotes that might be added
+                topic_name = topic_name.strip('"\'')
+
+                return topic_name if topic_name else "General"
+
+            except Exception as e:
+                print(f"Error generating topic name with LLM: {e}")
+                # Fallback to simple keyword extraction
+                from collections import Counter
+                stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from'}
+                all_text = ' '.join(cluster_tweets).lower()
+                words = re.findall(r'\b[a-z]{3,}\b', all_text)
+                meaningful_words = [w for w in words if w not in stop_words]
+                word_counts = Counter(meaningful_words)
+                top_words = [word for word, count in word_counts.most_common(3)]
+                return " & ".join(word.capitalize() for word in top_words) if top_words else "General"
+
+
+        # Get all tweets and embeddings for this user
+        user_embeddings = []
+        user_tweets = []
+        user_tweet_data = []  # Store full tweet data including IDs
+        user_indices = []
+
+        for idx, meta in enumerate(db.metadata):
+            if meta.get("account_username") == username:
+                user_indices.append(idx)
+                tweet_text = meta.get("full_text", "")
+                user_tweets.append(tweet_text)
+                # Store full data for later use
+                user_tweet_data.append({
+                    "text": tweet_text,
+                    "tweet_id": meta.get("tweet_id"),
+                    "username": meta.get("account_username")
+                })
+
+        if len(user_indices) == 0:
+            return {"error": f"No tweets found for user {username}"}
+
+        # Reconstruct embeddings from FAISS index
+        for idx in user_indices:
+            embedding = db.index.reconstruct(int(idx))
+            user_embeddings.append(embedding)
+
+        user_embeddings = np.array(user_embeddings)
+
+        # Cluster the embeddings
+        n_clusters = min(num_topics, len(user_embeddings))
+        if n_clusters < 2:
+            # Not enough tweets to cluster - rank by similarity to mean
+            centroid = np.mean(user_embeddings, axis=0)
+            centroid_norm = centroid / np.linalg.norm(centroid)
+
+            similarities = []
+            for i, (tweet, embedding) in enumerate(zip(user_tweets, user_embeddings)):
+                embedding_norm = embedding / np.linalg.norm(embedding)
+                similarity = np.dot(embedding_norm, centroid_norm)
+                similarities.append((similarity, tweet))
+
+            similarities.sort(reverse=True)
+            ranked_tweets = [{"text": tweet, "similarity": float(sim)} for sim, tweet in similarities]
+
+            topic_name = extract_topic_name(user_tweets)
+            return {
+                "username": username,
+                "tweet_count": len(user_tweets),
+                "topics": [{
+                    "topic_id": 0,
+                    "topic_name": topic_name,
+                    "tweets": ranked_tweets,
+                    "tweet_count": len(user_tweets)
+                }]
+            }
+
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(user_embeddings)
+
+        def refine_cluster_with_llm(cluster_tweets):
+            """Use LLM to filter out tweets that don't belong to the cluster's main topic"""
+            from openai import OpenAI
+
+            if len(cluster_tweets) < 5:
+                # Too few tweets to meaningfully filter
+                return cluster_tweets
+
+            # Sample up to 20 tweets for LLM analysis
+            sample_size = min(20, len(cluster_tweets))
+            sample_tweets = cluster_tweets[:sample_size]
+
+            # Create prompt asking LLM to identify which tweets belong together
+            tweets_text = "\n".join([f"{i+1}. {tweet}" for i, tweet in enumerate(sample_tweets)])
+
+            prompt = f"""Analyze these {sample_size} tweets and identify which ones share a common meaningful topic or theme.
+
+{tweets_text}
+
+Instructions:
+1. Identify the main topic/theme that MOST tweets share
+2. List the tweet numbers (1-{sample_size}) that genuinely belong to this topic
+3. Exclude tweets that are just short replies, greetings, or don't fit the main theme
+4. If there's no coherent topic (just random short replies), return "NONE"
+
+Respond ONLY with comma-separated numbers (e.g., "1,3,5,7,12") or "NONE"."""
+
+            try:
+                client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a tweet clustering expert that identifies coherent topics and filters out noise."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=50,
+                    temperature=0.2
+                )
+
+                result = response.choices[0].message.content.strip()
+
+                # If LLM says there's no coherent topic, mark this cluster as low-quality
+                if result.upper() == "NONE":
+                    return []
+
+                # Parse the tweet numbers
+                try:
+                    valid_indices = [int(x.strip()) - 1 for x in result.split(",") if x.strip().isdigit()]
+                    # Only keep tweets that LLM identified as belonging to the main topic
+                    filtered_tweets = [cluster_tweets[i] for i in valid_indices if i < len(cluster_tweets)]
+
+                    # If less than 30% of tweets belong, this cluster is probably noise
+                    if len(filtered_tweets) < len(cluster_tweets) * 0.3:
+                        return []
+
+                    return filtered_tweets
+                except:
+                    # If parsing fails, keep all tweets
+                    return cluster_tweets
+
+            except Exception as e:
+                print(f"Error refining cluster with LLM: {e}")
+                # On error, keep all tweets
+                return cluster_tweets
+
+        # Group tweets by cluster and rank by similarity to centroid
+        topics = []
+        for cluster_id in range(n_clusters):
+            # Get indices of tweets in this cluster
+            cluster_indices = [i for i, label in enumerate(labels) if label == cluster_id]
+
+            # Skip empty clusters
+            if len(cluster_indices) == 0:
+                continue
+
+            cluster_tweets = [user_tweets[i] for i in cluster_indices]
+            cluster_embeddings = user_embeddings[cluster_indices]
+
+            # Refine cluster using LLM to remove noise
+            refined_tweets = refine_cluster_with_llm(cluster_tweets)
+
+            # Skip clusters that are mostly noise
+            if len(refined_tweets) < 3:
+                continue
+
+            # Re-index embeddings for refined tweets and get corresponding tweet data
+            refined_indices = [i for i, tweet in enumerate(cluster_tweets) if tweet in refined_tweets]
+            refined_embeddings = cluster_embeddings[refined_indices]
+
+            # Map refined tweets back to original indices to get tweet IDs
+            original_indices = [cluster_indices[i] for i in refined_indices]
+            refined_tweet_data = [user_tweet_data[idx] for idx in original_indices]
+
+            # Calculate centroid (mean) of cluster embeddings
+            centroid = np.mean(refined_embeddings, axis=0)
+
+            # Calculate cosine similarity of each tweet to the centroid
+            # Normalize vectors for cosine similarity
+            centroid_norm = centroid / np.linalg.norm(centroid)
+            similarities = []
+            for i, embedding in enumerate(refined_embeddings):
+                embedding_norm = embedding / np.linalg.norm(embedding)
+                similarity = np.dot(embedding_norm, centroid_norm)
+                similarities.append((i, similarity, refined_tweet_data[i]))
+
+            # Sort by similarity (highest first)
+            similarities.sort(key=lambda x: x[1], reverse=True)
+
+            # Get ranked tweets with similarity scores and IDs
+            ranked_tweets = [
+                {
+                    "text": tweet_data["text"],
+                    "similarity": float(sim),
+                    "tweet_id": tweet_data["tweet_id"],
+                    "username": tweet_data["username"]
+                }
+                for _, sim, tweet_data in similarities
+            ]
+
+            # Extract topic name from refined cluster tweets
+            topic_name = extract_topic_name(refined_tweets)
+
+            topics.append({
+                "topic_id": cluster_id,
+                "topic_name": topic_name,
+                "tweets": ranked_tweets,  # All tweets, ranked by similarity
+                "tweet_count": len(refined_tweets)
+            })
+
+        # Sort by tweet count (most common topics first)
+        topics.sort(key=lambda x: x["tweet_count"], reverse=True)
+
+        # If no meaningful topics after LLM filtering, return error
+        if len(topics) == 0:
+            return {
+                "error": f"No meaningful topics found for {username}. This user's tweets are mostly short replies or don't cluster into coherent themes."
+            }
+
+        return {
+            "username": username,
+            "tweet_count": len(user_tweets),
+            "topics": topics
+        }
+
     @web_app.post("/search")
     async def search_endpoint(request: SearchRequest):
         """Search API endpoint"""
@@ -375,13 +706,19 @@ def web():
         if not query_text:
             return {"error": "query parameter required"}
 
-        # Load vector DB
-        db = VectorDB()
-        if not db.load("/data"):
+        # Get cached vector DB
+        db = get_vector_db()
+        if db is None:
             return {"error": "vector database not initialized - run sync first"}
 
-        # Generate query embedding (using input_type="query")
-        query_embedding = generate_query_embedding.remote(query_text)
+        # Generate query embedding directly (no separate function call)
+        vo = get_voyage_client()
+        result = vo.embed(
+            texts=[query_text],
+            model="voyage-3",
+            input_type="query"
+        )
+        query_embedding = result.embeddings[0]
 
         # Search
         results = db.search(query_embedding, limit=limit)
@@ -576,7 +913,11 @@ def web():
 <body>
     <div class="container">
         <h1>Tweet Semantic Search</h1>
-        <div class="subtitle">Powered by Modal + Voyage AI + FAISS</div>
+        <div style="text-align: center; margin-bottom: 30px; margin-top: 30px;">
+            <a href="/topics" style="display: inline-block; padding: 12px 24px; background: white; color: #667eea; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(0,0,0,0.2)'" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)'">
+                Analyze User Topics
+            </a>
+        </div>
 
         <div class="search-box">
             <input type="text" id="query" placeholder="Search tweets semantically..." />
@@ -584,7 +925,6 @@ def web():
         </div>
 
         <div id="results"></div>
-        <div class="powered-by">Running on Modal</div>
     </div>
 
     <script>
@@ -677,6 +1017,316 @@ def web():
 </html>
     """
 
+        return HTMLResponse(content=html)
+
+    @web_app.get("/topics")
+    async def topics_ui():
+        """User Topics Analysis UI"""
+        html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>User Topics Analysis</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: white;
+            font-size: 36px;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .subtitle {
+            color: rgba(255,255,255,0.9);
+            text-align: center;
+            margin-bottom: 40px;
+            font-size: 16px;
+        }
+        .selector-box {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            margin-bottom: 30px;
+        }
+        select {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            transition: all 0.3s;
+            background: white;
+        }
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        button {
+            margin-top: 15px;
+            width: 100%;
+            padding: 16px;
+            font-size: 16px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .loading {
+            text-align: center;
+            color: white;
+            font-size: 18px;
+            margin: 20px 0;
+        }
+        .results {
+            margin-top: 30px;
+        }
+        .topic-card {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        .topic-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        .topic-name {
+            font-size: 24px;
+            font-weight: 700;
+            color: #667eea;
+        }
+        .topic-count {
+            background: #667eea;
+            color: white;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .tweet-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .tweet-item {
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+            transition: all 0.2s;
+        }
+        .tweet-link {
+            text-decoration: none;
+            color: inherit;
+            display: block;
+        }
+        .tweet-item:hover {
+            background: #e9ecef;
+            transform: translateX(4px);
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+        }
+        .tweet-text {
+            color: #2c3e50;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+        .tweet-similarity {
+            font-size: 12px;
+            color: #667eea;
+            font-weight: 600;
+        }
+        .error {
+            background: #ff4444;
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        .user-header {
+            background: white;
+            border-radius: 16px;
+            padding: 20px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+        .username-display {
+            font-size: 28px;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        .tweet-count-display {
+            color: #667eea;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>User Topics Analysis</h1>
+        <p class="subtitle">Discover what users tweet about, ranked by semantic similarity</p>
+        <div style="text-align: center; margin-bottom: 20px;">
+            <a href="/" style="display: inline-block; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(0,0,0,0.2)'" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)'">
+                ← Back to Search
+            </a>
+        </div>
+
+        <div class="selector-box">
+            <select id="userSelect">
+                <option value="">Loading users...</option>
+            </select>
+            <button onclick="analyzeUser()" id="analyzeBtn" disabled>Analyze Topics</button>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            Analyzing topics... This may take a minute.
+        </div>
+
+        <div id="results" class="results"></div>
+    </div>
+
+    <script>
+        let users = [];
+
+        // Load users on page load
+        async function loadUsers() {
+            try {
+                const response = await fetch('/users?min_tweets=20');
+                const data = await response.json();
+                users = data.users;
+
+                const select = document.getElementById('userSelect');
+                select.innerHTML = `<option value="">Select a user... (${data.total_users} users with ${data.min_tweets}+ tweets)</option>`;
+                // Add info about filtering
+                const subtitle = document.querySelector('.subtitle');
+                subtitle.textContent = `Discover what users tweet about, ranked by semantic similarity (showing users with ${data.min_tweets}+ tweets)`;
+                users.forEach(user => {
+                    const option = document.createElement('option');
+                    option.value = user.username;
+                    option.textContent = `@${user.username} (${user.tweet_count} tweets)`;
+                    select.appendChild(option);
+                });
+
+                document.getElementById('analyzeBtn').disabled = false;
+            } catch (error) {
+                document.getElementById('userSelect').innerHTML = '<option value="">Error loading users</option>';
+                console.error('Error loading users:', error);
+            }
+        }
+
+        async function analyzeUser() {
+            const username = document.getElementById('userSelect').value;
+            if (!username) {
+                alert('Please select a user');
+                return;
+            }
+
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('analyzeBtn').disabled = true;
+
+            try {
+                const response = await fetch(`/user/${username}/topics?num_topics=5`);
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('results').innerHTML = `
+                        <div class="error">${data.error}</div>
+                    `;
+                } else {
+                    displayResults(data);
+                }
+            } catch (error) {
+                document.getElementById('results').innerHTML = `
+                    <div class="error">Error analyzing topics: ${error.message}</div>
+                `;
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('analyzeBtn').disabled = false;
+            }
+        }
+
+        function displayResults(data) {
+            let html = `
+                <div class="user-header">
+                    <div class="username-display">@${data.username}</div>
+                    <div class="tweet-count-display">${data.tweet_count} tweets analyzed</div>
+                </div>
+            `;
+
+            data.topics.forEach((topic, index) => {
+                html += `
+                    <div class="topic-card">
+                        <div class="topic-header">
+                            <div class="topic-name">${topic.topic_name}</div>
+                            <div class="topic-count">${topic.tweet_count} tweets</div>
+                        </div>
+                        <div class="tweet-list">
+                `;
+
+                // Show only top 10 most relevant tweets
+                topic.tweets.slice(0, 10).forEach(tweet => {
+                    const similarityPercent = (tweet.similarity * 100).toFixed(1);
+                    const tweetUrl = `https://twitter.com/${tweet.username}/status/${tweet.tweet_id}`;
+                    html += `
+                        <a href="${tweetUrl}" target="_blank" class="tweet-item tweet-link">
+                            <div class="tweet-text">${escapeHtml(tweet.text)}</div>
+                            <div class="tweet-similarity">Similarity: ${similarityPercent}% • Click to view on Twitter →</div>
+                        </a>
+                    `;
+                });
+
+                html += `
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('results').innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Load users when page loads
+        loadUsers();
+    </script>
+</body>
+</html>
+        """
         return HTMLResponse(content=html)
 
     return web_app
@@ -905,3 +1555,5 @@ Features:
   ✅ Username display
   ✅ Persistent storage on Modal
         """)
+
+        return HTMLResponse(content=html)
