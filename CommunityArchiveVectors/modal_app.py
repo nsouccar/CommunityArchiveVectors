@@ -169,6 +169,63 @@ class VectorDB:
         return self.index.ntotal
 
 
+class TopicsCache:
+    """Cache for pre-computed user topics and user list"""
+
+    def __init__(self):
+        self.topics = {}  # username -> topics data
+        self.users_list = None  # Pre-computed users list for /users endpoint
+
+    def save(self, path: str):
+        """Save topics cache to disk"""
+        import pickle
+        data = {
+            "topics": self.topics,
+            "users_list": self.users_list
+        }
+        with open(f"{path}/topics_cache.pkl", "wb") as f:
+            pickle.dump(data, f)
+
+    def load(self, path: str):
+        """Load topics cache from disk"""
+        import pickle
+        import os
+        cache_path = f"{path}/topics_cache.pkl"
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as f:
+                data = pickle.load(f)
+                # Handle both old format (just dict) and new format (dict with topics + users_list)
+                if isinstance(data, dict) and "topics" in data:
+                    self.topics = data["topics"]
+                    self.users_list = data.get("users_list")
+                else:
+                    # Old format - just the topics dict
+                    self.topics = data
+                    self.users_list = None
+            return True
+        return False
+
+    def get(self, username: str):
+        """Get topics for a user"""
+        return self.topics.get(username)
+
+    def set(self, username: str, topics_data):
+        """Set topics for a user"""
+        self.topics[username] = topics_data
+
+    def has(self, username: str):
+        """Check if user has cached topics"""
+        return username in self.topics
+
+    def set_users_list(self, users_list):
+        """Set the pre-computed users list"""
+        self.users_list = users_list
+
+    def get_users_list(self):
+        """Get the pre-computed users list"""
+        return self.users_list
+
+
 # ============================================================================
 # DATA SYNC FROM SUPABASE
 # ============================================================================
@@ -347,6 +404,371 @@ def sync_tweets_from_supabase(limit: int = 10000):
 
 
 # ============================================================================
+# PRE-COMPUTE ALL TOPICS
+# ============================================================================
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    volumes={"/data": vector_volume},
+    timeout=7200,  # 2 hours for full computation
+)
+def precompute_all_topics(min_tweets: int = 30):
+    """
+    Pre-compute topics for ALL users with at least min_tweets
+    This takes 30-60 minutes but makes all future requests instant!
+
+    Usage: modal run modal_app.py::precompute_all_topics
+    """
+    import numpy as np
+    from sklearn.cluster import KMeans
+    from collections import Counter
+    import re
+    from openai import OpenAI
+
+    print(f"🚀 Starting pre-computation of topics for all users with {min_tweets}+ tweets...\n")
+
+    # Load vector DB
+    db = VectorDB()
+    if not db.load("/data"):
+        print("❌ Error: No vector database found. Run sync first!")
+        return {"error": "No vector database found"}
+
+    print(f"✅ Loaded vector database with {len(db.metadata):,} tweets\n")
+
+    # Load or create topics cache
+    topics_cache = TopicsCache()
+    topics_cache.load("/data")
+    print(f"📂 Loaded existing cache with {len(topics_cache.topics)} users\n")
+
+    # Get all users with at least min_tweets
+    username_counts = Counter()
+    for meta in db.metadata:
+        username = meta.get("account_username")
+        if username:
+            username_counts[username] += 1
+
+    qualified_users = [
+        username for username, count in username_counts.items()
+        if count >= min_tweets
+    ]
+
+    qualified_users.sort()  # Alphabetical order
+
+    print(f"👥 Found {len(qualified_users)} users with {min_tweets}+ tweets\n")
+    print(f"💰 Estimated cost: ${len(qualified_users) * 0.001:.2f} (OpenAI API calls)")
+    print(f"⏱️  Estimated time: {len(qualified_users) * 10 / 60:.1f} minutes\n")
+    print("="*60)
+
+    # Import the topic computation logic (we'll call the endpoint internally)
+    # For now, let me create a helper function that replicates the logic
+
+    def compute_topics_for_user(username: str, num_topics: int = 5):
+        """Compute topics for a single user (extracted from endpoint logic)"""
+
+        def is_substantive_tweet(text: str) -> bool:
+            if len(text.strip()) < 15:
+                return False
+            words = text.strip().split()
+            if len(words) <= 2:
+                return False
+            low_quality_patterns = [
+                'based', 'lol', 'lmao', 'haha', 'lmfao', 'true',
+                'same', 'yep', 'nope', 'yeah', 'nah', 'agreed',
+                'this', 'nice', 'cool', 'wow', 'omg', 'wtf'
+            ]
+            text_lower = text.lower().strip()
+            if text_lower in low_quality_patterns:
+                return False
+            if text.startswith('@') and len(words) <= 3:
+                return False
+            return True
+
+        def extract_topic_name(cluster_tweets):
+            """Extract topic name from cluster tweets using LLM analysis with quality validation"""
+            import os
+
+            # Check if tweets have enough substance
+            avg_length = sum(len(tweet) for tweet in cluster_tweets) / len(cluster_tweets)
+            if avg_length < 40:
+                return None  # Skip topic naming for low-quality clusters
+
+            # Use up to 15 sample tweets for better context
+            sample_size = min(15, len(cluster_tweets))
+            sample_tweets = cluster_tweets[:sample_size]
+
+            # Calculate metrics to help LLM assess quality
+            unique_words = len(set(' '.join(sample_tweets).lower().split()))
+
+            # Create prompt for LLM with quality check
+            tweets_text = "\n".join([f"{i+1}. {tweet}" for i, tweet in enumerate(sample_tweets)])
+
+            prompt = f"""Analyze these {sample_size} tweets from a cluster:
+
+{tweets_text}
+
+Cluster Statistics:
+- Average tweet length: {avg_length:.0f} characters
+- Unique words: {unique_words}
+
+Task: Determine if this is a COHERENT topic cluster or just NOISE (random short replies).
+
+RED FLAGS for noise:
+- Mostly very short replies like "based", "lol", "true", "agreed"
+- No substantive discussion or common theme
+- Just reactions/mentions without content
+- Tweets don't actually relate to each other
+
+If this is NOISE (low-quality cluster), respond: SKIP
+
+If this is a COHERENT topic cluster:
+1. Create a clear, specific topic name (2-5 words)
+2. Be descriptive and accurate
+3. Base it on the actual content, not assumptions
+
+Good topic examples:
+- "Artificial Intelligence Research"
+- "Climate Change Policy"
+- "Software Engineering Best Practices"
+
+Respond with ONLY the topic name or "SKIP"."""
+
+            try:
+                client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",  # Fast and cheap model
+                    messages=[
+                        {"role": "system", "content": "You are an expert at identifying meaningful topics from tweet clusters and filtering out noise. You are critical and will reject low-quality clusters that are just short replies or reactions."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=30,
+                    temperature=0.1  # Very low temperature for consistent quality filtering
+                )
+
+                topic_name = response.choices[0].message.content.strip()
+                # Remove any quotes that might be added
+                topic_name = topic_name.strip('"\'')
+
+                # If LLM says to skip, return None
+                if topic_name.upper() == "SKIP" or topic_name.upper() == "NOISE":
+                    return None
+
+                return topic_name if topic_name else None
+
+            except Exception as e:
+                print(f"Error generating topic name with LLM: {e}")
+                # Fallback to simple keyword extraction
+                stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'this', 'that'}
+                all_text = ' '.join(cluster_tweets).lower()
+                words = re.findall(r'\b[a-z]{4,}\b', all_text)  # At least 4 letters
+                meaningful_words = [w for w in words if w not in stop_words]
+                word_counts = Counter(meaningful_words)
+                if len(word_counts) == 0:
+                    return None
+                top_words = [word for word, count in word_counts.most_common(2)]
+                return " & ".join(word.capitalize() for word in top_words) if top_words else None
+
+        # Get user's tweets
+        user_embeddings = []
+        user_tweets = []
+        user_tweet_data = []
+        user_indices = []
+
+        for idx, meta in enumerate(db.metadata):
+            if meta.get("account_username") == username:
+                tweet_text = meta.get("full_text", "")
+                if not is_substantive_tweet(tweet_text):
+                    continue
+                user_indices.append(idx)
+                user_tweets.append(tweet_text)
+                user_tweet_data.append({
+                    "text": tweet_text,
+                    "tweet_id": meta.get("tweet_id"),
+                    "username": meta.get("account_username")
+                })
+
+        if len(user_indices) < 5:
+            return None  # Not enough substantive tweets
+
+        # Reconstruct embeddings
+        for idx in user_indices:
+            embedding = db.index.reconstruct(int(idx))
+            user_embeddings.append(embedding)
+
+        user_embeddings = np.array(user_embeddings)
+
+        # Cluster
+        n_clusters = min(num_topics, len(user_embeddings))
+        if n_clusters < 2:
+            return None
+
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(user_embeddings)
+
+        # Process clusters (simplified - no LLM refinement for speed)
+        topics = []
+        for cluster_id in range(n_clusters):
+            cluster_indices = [i for i, label in enumerate(labels) if label == cluster_id]
+
+            if len(cluster_indices) == 0:
+                continue
+
+            cluster_tweets = [user_tweets[i] for i in cluster_indices]
+            cluster_embeddings = user_embeddings[cluster_indices]
+
+            # Skip if average tweet length too short
+            avg_length = sum(len(tweet) for tweet in cluster_tweets) / len(cluster_tweets)
+            if avg_length < 40 or len(cluster_tweets) < 5:
+                continue
+
+            # Calculate centroid and rank tweets
+            centroid = np.mean(cluster_embeddings, axis=0)
+            centroid_norm = centroid / np.linalg.norm(centroid)
+
+            similarities = []
+            original_indices = [cluster_indices[i] for i in range(len(cluster_indices))]
+            for i, embedding in enumerate(cluster_embeddings):
+                embedding_norm = embedding / np.linalg.norm(embedding)
+                similarity = np.dot(embedding_norm, centroid_norm)
+                tweet_data = user_tweet_data[original_indices[i]]
+                similarities.append((similarity, tweet_data))
+
+            similarities.sort(key=lambda x: x[0], reverse=True)
+
+            ranked_tweets = [
+                {
+                    "text": tweet_data["text"],
+                    "similarity": float(sim),
+                    "tweet_id": tweet_data["tweet_id"],
+                    "username": tweet_data["username"]
+                }
+                for sim, tweet_data in similarities
+            ]
+
+            # Use LLM-based topic naming with quality validation
+            topic_name = extract_topic_name(cluster_tweets)
+            if topic_name is None:
+                # Skip low-quality clusters
+                continue
+
+            topics.append({
+                "topic_id": cluster_id,
+                "topic_name": topic_name,
+                "tweets": ranked_tweets,
+                "tweet_count": len(cluster_tweets)
+            })
+
+        if len(topics) == 0:
+            return None
+
+        topics.sort(key=lambda x: x["tweet_count"], reverse=True)
+
+        return {
+            "username": username,
+            "tweet_count": len(user_tweets),
+            "topics": topics
+        }
+
+    # Pre-compute for all users
+    success_count = 0
+    skip_count = 0
+    error_count = 0
+
+    for i, username in enumerate(qualified_users):
+        print(f"[{i+1}/{len(qualified_users)}] Processing {username}...", end=" ")
+
+        # Skip if already cached
+        if topics_cache.has(username):
+            print("✓ Already cached")
+            success_count += 1
+            continue
+
+        try:
+            result = compute_topics_for_user(username)
+
+            if result is None:
+                print("⊘ Skipped (not enough substantive tweets)")
+                skip_count += 1
+            else:
+                topics_cache.set(username, result)
+                print(f"✓ Cached {len(result['topics'])} topics")
+                success_count += 1
+
+                # Save every 10 users to avoid losing progress
+                if (i + 1) % 10 == 0:
+                    topics_cache.save("/data")
+                    vector_volume.commit()
+                    print(f"   💾 Progress saved ({success_count} users cached)")
+
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            error_count += 1
+
+    # Generate users list for /users endpoint
+    print("\n📊 Generating users list...")
+    users_list = []
+    for username, topics_data in topics_cache.topics.items():
+        if topics_data and "topics" in topics_data:
+            users_list.append({
+                "username": username,
+                "tweet_count": topics_data.get("tweet_count", 0),
+                "topic_count": len(topics_data.get("topics", []))
+            })
+
+    # Sort by tweet count
+    users_list.sort(key=lambda x: x["tweet_count"], reverse=True)
+    topics_cache.set_users_list(users_list)
+    print(f"✓ Generated users list with {len(users_list)} users")
+
+    # Final save
+    topics_cache.save("/data")
+    vector_volume.commit()
+
+    print("\n" + "="*60)
+    print(f"✅ Pre-computation complete!")
+    print(f"   ✓ Successfully cached: {success_count} users")
+    print(f"   ⊘ Skipped: {skip_count} users")
+    print(f"   ✗ Errors: {error_count} users")
+    print(f"   💾 Topics cache size: {len(topics_cache.topics)} users")
+    print(f"   📊 Users list size: {len(users_list)} users")
+    print("="*60)
+
+    return {
+        "status": "success",
+        "cached_users": success_count,
+        "skipped_users": skip_count,
+        "errors": error_count,
+        "total_in_cache": len(topics_cache.topics),
+        "users_list_size": len(users_list)
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    volumes={"/data": vector_volume},
+    timeout=60,
+)
+def clear_topics_cache():
+    """Clear the topics cache to force recomputation
+
+    Usage: modal run modal_app.py::clear_topics_cache
+    """
+    import os
+    cache_path = "/data/topics_cache.pkl"
+
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        vector_volume.commit()
+        print("✅ Topics cache cleared!")
+        return {"status": "success", "message": "Cache cleared"}
+    else:
+        print("⚠️  No cache file found")
+        return {"status": "success", "message": "No cache file to clear"}
+
+
+# ============================================================================
 # COMBINED WEB APP (UI + SEARCH API)
 # ============================================================================
 
@@ -369,6 +791,7 @@ def web():
     class SearchRequest(BaseModel):
         query: str
         limit: int = 10
+        rerank: bool = False  # Enable LLM-based re-ranking for better semantic relevance
 
     # Pre-load the vector database once at startup
     _cached_db = {"db": None}  # Use dict to avoid global/nonlocal issues
@@ -393,15 +816,46 @@ def web():
             _voyage_client["client"] = voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
         return _voyage_client["client"]
 
+    # Topics cache for lazy computation
+    _topics_cache = {"cache": None, "last_check": 0}
+    def get_topics_cache():
+        """Get or load the topics cache (with periodic reloading)"""
+        import time
+        current_time = time.time()
+
+        # Reload cache every 5 minutes to pick up new pre-computations
+        if _topics_cache["cache"] is None or (current_time - _topics_cache["last_check"]) > 300:
+            print(f"{'Loading' if _topics_cache['cache'] is None else 'Reloading'} topics cache...")
+            # Reload volume to see changes from other containers (like precompute_all_topics)
+            vector_volume.reload()
+            cache = TopicsCache()
+            cache.load("/data")
+            print(f"Topics cache loaded with {len(cache.topics)} users")
+            _topics_cache["cache"] = cache
+            _topics_cache["last_check"] = current_time
+        return _topics_cache["cache"]
+
     @web_app.get("/users")
     async def get_users(min_tweets: int = 30):
-        """Get list of all users in the index with at least min_tweets tweets and meaningful clusters"""
-        # Get cached vector DB
-        db = get_vector_db()
-        if db is None:
-            return {"error": "vector database not initialized"}
+        """Get list of all users in the index with at least min_tweets tweets (cached)"""
+        # Check if we have a pre-computed users list
+        topics_cache = get_topics_cache()
+        users_list = topics_cache.get_users_list()
 
-        # Count tweets per user
+        if users_list is not None:
+            # Serve from cache (instant!)
+            print(f"✅ Serving users list from cache ({len(users_list)} users)")
+            # Filter by min_tweets if different from default
+            filtered_users = [u for u in users_list if u["tweet_count"] >= min_tweets]
+            return {
+                "users": filtered_users,
+                "total_users": len(filtered_users),
+                "min_tweets": min_tweets
+            }
+
+        # Fallback: compute users list on-the-fly if cache doesn't have it yet
+        print("⚠️  Users list not cached yet, computing on-the-fly...")
+        db = get_vector_db()
         from collections import Counter
         username_counts = Counter()
         for meta in db.metadata:
@@ -409,31 +863,37 @@ def web():
             if username:
                 username_counts[username] += 1
 
-        # Filter users with enough tweets (higher threshold since LLM will filter more)
-        # Using min_tweets=30 because after LLM filtering, users need more raw tweets
-        # to end up with meaningful clusters
-        qualified_users = [
-            {"username": username, "tweet_count": count}
-            for username, count in username_counts.items()
-            if count >= min_tweets
-        ]
+        users_list = []
+        for username, count in username_counts.items():
+            if count >= min_tweets:
+                users_list.append({
+                    "username": username,
+                    "tweet_count": count,
+                    "topic_count": 0  # Unknown until topics are computed
+                })
 
-        # Sort by tweet count (most tweets first)
-        qualified_users.sort(key=lambda x: x["tweet_count"], reverse=True)
+        users_list.sort(key=lambda x: x["tweet_count"], reverse=True)
 
         return {
-            "users": qualified_users,
-            "total_users": len(qualified_users),
-            "min_tweets": min_tweets
+            "users": users_list,
+            "total_users": len(users_list),
+            "min_tweets": min_tweets,
+            "cached": False
         }
 
     @web_app.get("/user/{username}/topics")
     async def get_user_topics(username: str, num_topics: int = 5):
-        """Get top topics for a specific user using clustering"""
+        """Get top topics for a specific user using clustering (with caching)"""
         import numpy as np
         from sklearn.cluster import KMeans
         from collections import Counter
         import re
+
+        # Check if topics are already cached
+        topics_cache = get_topics_cache()
+        if topics_cache.has(username):
+            print(f"✅ Serving cached topics for {username}")
+            return topics_cache.get(username)
 
         # Get cached vector DB
         db = get_vector_db()
@@ -441,25 +901,53 @@ def web():
             return {"error": "vector database not initialized"}
 
         def extract_topic_name(cluster_tweets):
-            """Extract topic name from cluster tweets using LLM analysis"""
+            """Extract topic name from cluster tweets using LLM analysis with quality validation"""
             from openai import OpenAI
 
-            # Use up to 10 sample tweets for analysis (to keep prompt size reasonable)
-            sample_tweets = cluster_tweets[:10]
+            # Check if tweets have enough substance
+            avg_length = sum(len(tweet) for tweet in cluster_tweets) / len(cluster_tweets)
+            if avg_length < 40:
+                return None  # Skip topic naming for low-quality clusters
 
-            # Create prompt for LLM
-            tweets_text = "\n".join([f"- {tweet}" for tweet in sample_tweets])
+            # Use up to 15 sample tweets for better context
+            sample_size = min(15, len(cluster_tweets))
+            sample_tweets = cluster_tweets[:sample_size]
 
-            prompt = f"""Analyze these tweets and create a short, descriptive topic name (2-4 words max) that captures the main theme:
+            # Calculate metrics to help LLM assess quality
+            unique_words = len(set(' '.join(sample_tweets).lower().split()))
+
+            # Create prompt for LLM with quality check
+            tweets_text = "\n".join([f"{i+1}. {tweet}" for i, tweet in enumerate(sample_tweets)])
+
+            prompt = f"""Analyze these {sample_size} tweets from a cluster:
 
 {tweets_text}
 
-Respond with ONLY the topic name, nothing else. Examples of good topic names:
-- "AI & Machine Learning"
-- "Web Development"
-- "Personal Updates"
-- "Tech News & Trends"
-"""
+Cluster Statistics:
+- Average tweet length: {avg_length:.0f} characters
+- Unique words: {unique_words}
+
+Task: Determine if this is a COHERENT topic cluster or just NOISE (random short replies).
+
+RED FLAGS for noise:
+- Mostly very short replies like "based", "lol", "true", "agreed"
+- No substantive discussion or common theme
+- Just reactions/mentions without content
+- Tweets don't actually relate to each other
+
+If this is NOISE (low-quality cluster), respond: SKIP
+
+If this is a COHERENT topic cluster:
+1. Create a clear, specific topic name (2-5 words)
+2. Be descriptive and accurate
+3. Base it on the actual content, not assumptions
+
+Good topic examples:
+- "Artificial Intelligence Research"
+- "Climate Change Policy"
+- "Software Engineering Best Practices"
+
+Respond with ONLY the topic name or "SKIP"."""
 
             try:
                 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -467,31 +955,64 @@ Respond with ONLY the topic name, nothing else. Examples of good topic names:
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",  # Fast and cheap model
                     messages=[
-                        {"role": "system", "content": "You are a topic classifier that creates short, descriptive topic names from tweet clusters."},
+                        {"role": "system", "content": "You are an expert at identifying meaningful topics from tweet clusters and filtering out noise. You are critical and will reject low-quality clusters that are just short replies or reactions."},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=20,
-                    temperature=0.3
+                    max_tokens=30,
+                    temperature=0.1  # Very low temperature for consistent quality filtering
                 )
 
                 topic_name = response.choices[0].message.content.strip()
                 # Remove any quotes that might be added
                 topic_name = topic_name.strip('"\'')
 
-                return topic_name if topic_name else "General"
+                # If LLM says to skip, return None
+                if topic_name.upper() == "SKIP" or topic_name.upper() == "NOISE":
+                    return None
+
+                return topic_name if topic_name else None
 
             except Exception as e:
                 print(f"Error generating topic name with LLM: {e}")
                 # Fallback to simple keyword extraction
                 from collections import Counter
-                stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from'}
+                stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'this', 'that'}
                 all_text = ' '.join(cluster_tweets).lower()
-                words = re.findall(r'\b[a-z]{3,}\b', all_text)
+                words = re.findall(r'\b[a-z]{4,}\b', all_text)  # At least 4 letters
                 meaningful_words = [w for w in words if w not in stop_words]
                 word_counts = Counter(meaningful_words)
-                top_words = [word for word, count in word_counts.most_common(3)]
-                return " & ".join(word.capitalize() for word in top_words) if top_words else "General"
+                if len(word_counts) == 0:
+                    return None
+                top_words = [word for word, count in word_counts.most_common(2)]
+                return " & ".join(word.capitalize() for word in top_words) if top_words else None
 
+
+        def is_substantive_tweet(text: str) -> bool:
+            """Filter out low-quality tweets that shouldn't be clustered"""
+            # Remove very short tweets (< 15 characters)
+            if len(text.strip()) < 15:
+                return False
+
+            # Remove single-word or two-word replies
+            words = text.strip().split()
+            if len(words) <= 2:
+                return False
+
+            # Check for common short reply patterns
+            low_quality_patterns = [
+                'based', 'lol', 'lmao', 'haha', 'lmfao', 'true',
+                'same', 'yep', 'nope', 'yeah', 'nah', 'agreed',
+                'this', 'nice', 'cool', 'wow', 'omg', 'wtf'
+            ]
+            text_lower = text.lower().strip()
+            if text_lower in low_quality_patterns:
+                return False
+
+            # If it's just a mention with one word, skip it
+            if text.startswith('@') and len(words) <= 3:
+                return False
+
+            return True
 
         # Get all tweets and embeddings for this user
         user_embeddings = []
@@ -501,8 +1022,13 @@ Respond with ONLY the topic name, nothing else. Examples of good topic names:
 
         for idx, meta in enumerate(db.metadata):
             if meta.get("account_username") == username:
-                user_indices.append(idx)
                 tweet_text = meta.get("full_text", "")
+
+                # Filter out low-quality tweets before clustering
+                if not is_substantive_tweet(tweet_text):
+                    continue
+
+                user_indices.append(idx)
                 user_tweets.append(tweet_text)
                 # Store full data for later use
                 user_tweet_data.append({
@@ -512,7 +1038,7 @@ Respond with ONLY the topic name, nothing else. Examples of good topic names:
                 })
 
         if len(user_indices) == 0:
-            return {"error": f"No tweets found for user {username}"}
+            return {"error": f"No substantive tweets found for user {username}"}
 
         # Reconstruct embeddings from FAISS index
         for idx in user_indices:
@@ -631,11 +1157,23 @@ Respond ONLY with comma-separated numbers (e.g., "1,3,5,7,12") or "NONE"."""
             cluster_tweets = [user_tweets[i] for i in cluster_indices]
             cluster_embeddings = user_embeddings[cluster_indices]
 
+            # Calculate average tweet length in cluster
+            avg_length = sum(len(tweet) for tweet in cluster_tweets) / len(cluster_tweets)
+
+            # Skip clusters where average tweet is too short (likely just replies)
+            if avg_length < 30:
+                continue
+
             # Refine cluster using LLM to remove noise
             refined_tweets = refine_cluster_with_llm(cluster_tweets)
 
             # Skip clusters that are mostly noise
-            if len(refined_tweets) < 3:
+            if len(refined_tweets) < 5:
+                continue
+
+            # Check refined tweets average length too
+            refined_avg_length = sum(len(tweet) for tweet in refined_tweets) / len(refined_tweets)
+            if refined_avg_length < 40:
                 continue
 
             # Re-index embeddings for refined tweets and get corresponding tweet data
@@ -675,6 +1213,10 @@ Respond ONLY with comma-separated numbers (e.g., "1,3,5,7,12") or "NONE"."""
             # Extract topic name from refined cluster tweets
             topic_name = extract_topic_name(refined_tweets)
 
+            # Skip clusters where we couldn't generate a good topic name
+            if topic_name is None:
+                continue
+
             topics.append({
                 "topic_id": cluster_id,
                 "topic_name": topic_name,
@@ -691,17 +1233,100 @@ Respond ONLY with comma-separated numbers (e.g., "1,3,5,7,12") or "NONE"."""
                 "error": f"No meaningful topics found for {username}. This user's tweets are mostly short replies or don't cluster into coherent themes."
             }
 
-        return {
+        # Build result
+        result = {
             "username": username,
             "tweet_count": len(user_tweets),
             "topics": topics
         }
 
+        # Cache the result for future requests
+        print(f"💾 Caching topics for {username}")
+        topics_cache.set(username, result)
+        # Persist to disk (async write)
+        try:
+            topics_cache.save("/data")
+        except Exception as e:
+            print(f"Warning: Failed to save topics cache: {e}")
+
+        return result
+
+    def llm_rerank_results(query: str, results: list, top_k: int = 10):
+        """Use LLM to re-rank search results by semantic relevance"""
+        from openai import OpenAI
+        import json
+
+        if len(results) == 0:
+            return []
+
+        # Take top candidates for re-ranking (more than final limit for better selection)
+        candidates = results[:min(20, len(results))]
+
+        # Prepare tweets for LLM evaluation
+        tweets_text = ""
+        for i, r in enumerate(candidates):
+            tweets_text += f"{i+1}. @{r.get('account_username', 'unknown')}: {r.get('full_text', '')}\n\n"
+
+        prompt = f"""You are evaluating the semantic relevance of tweets to a search query.
+
+Query: "{query}"
+
+Tweets:
+{tweets_text}
+
+Task: Rank these tweets by TRUE semantic relevance to the query intent (not just keyword matching).
+
+Consider:
+- Does the tweet meaningfully address the query topic?
+- Is it a substantive discussion vs. a short reaction?
+- Does it provide useful information related to the query?
+- Context and nuance matter more than exact word matches
+
+Return ONLY a JSON array of tweet numbers (1-{len(candidates)}) in order from MOST to LEAST relevant.
+Example: [3, 1, 7, 2, ...]
+
+Return the top {top_k} most relevant tweet numbers."""
+
+        try:
+            client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert at evaluating semantic relevance of text to search queries. You understand context and meaning beyond keyword matching."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.1
+            )
+
+            # Parse LLM response
+            llm_output = response.choices[0].message.content.strip()
+            # Extract JSON array from response
+            import re
+            json_match = re.search(r'\[[\d,\s]+\]', llm_output)
+            if json_match:
+                ranked_indices = json.loads(json_match.group())
+                # Convert 1-indexed to 0-indexed and reorder results
+                reranked = []
+                for idx in ranked_indices[:top_k]:
+                    if 1 <= idx <= len(candidates):
+                        reranked.append(candidates[idx - 1])
+                return reranked
+            else:
+                print(f"Failed to parse LLM ranking: {llm_output}")
+                return results[:top_k]
+
+        except Exception as e:
+            print(f"LLM re-ranking error: {e}")
+            # Fallback to original ranking
+            return results[:top_k]
+
     @web_app.post("/search")
     async def search_endpoint(request: SearchRequest):
-        """Search API endpoint"""
+        """Search API endpoint with optional LLM re-ranking"""
         query_text = request.query
         limit = request.limit
+        use_rerank = request.rerank
 
         if not query_text:
             return {"error": "query parameter required"}
@@ -720,8 +1345,14 @@ Respond ONLY with comma-separated numbers (e.g., "1,3,5,7,12") or "NONE"."""
         )
         query_embedding = result.embeddings[0]
 
-        # Search
-        results = db.search(query_embedding, limit=limit)
+        # Search with larger limit if re-ranking (to get better candidates)
+        search_limit = limit * 2 if use_rerank else limit
+        results = db.search(query_embedding, limit=search_limit)
+
+        # Apply LLM re-ranking if requested
+        if use_rerank and len(results) > 0:
+            print(f"🔄 Re-ranking {len(results)} results with LLM...")
+            results = llm_rerank_results(query_text, results, top_k=limit)
 
         # Format results
         formatted_results = []
@@ -743,7 +1374,8 @@ Respond ONLY with comma-separated numbers (e.g., "1,3,5,7,12") or "NONE"."""
         return {
             "query": query_text,
             "results": formatted_results,
-            "total_vectors": db.count()
+            "total_vectors": db.count(),
+            "reranked": use_rerank
         }
 
     @web_app.get("/")
