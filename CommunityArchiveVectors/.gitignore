@@ -18,8 +18,18 @@ dist-ssr
 
 # Python virtual environment
 venv/
+modal_env/
 __pycache__/
 *.pyc
+
+# Large data files
+*.json
+!package.json
+!tsconfig.json
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb.backup
 
 # Editor directories and files
 .vscode/*
