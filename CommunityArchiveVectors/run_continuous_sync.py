@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Continuous sync script - runs 100K tweet batches sequentially until complete.
+Continuous sync script - runs 50K tweet batches sequentially until complete.
 Usage: python run_continuous_sync.py [--max-batches N]
 """
 
@@ -10,14 +10,14 @@ import time
 from datetime import datetime
 
 def run_batch(batch_num):
-    """Run a single 100K batch and return True if successful."""
+    """Run a single 50K batch and return True if successful."""
     print(f"\n{'='*80}")
     print(f"BATCH {batch_num} - Starting at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*80}\n")
 
     try:
         result = subprocess.run(
-            ["modal", "run", "modal_app.py::sync_tweets_from_supabase", "--limit", "100000"],
+            ["modal", "run", "modal_app.py::sync_tweets_from_supabase", "--limit", "50000"],
             check=True,
             capture_output=False,
             text=True
@@ -45,10 +45,10 @@ def main():
 
     start_time = datetime.now()
     print(f"🚀 Starting continuous sync at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📊 Each batch processes 100K tweets (~55 mins per batch)")
+    print(f"📊 Each batch processes 50K tweets (~30 mins per batch)")
 
     if max_batches:
-        print(f"🎯 Target: {max_batches} batches (~{max_batches * 100000:,} tweets)")
+        print(f"🎯 Target: {max_batches} batches (~{max_batches * 50000:,} tweets)")
     else:
         print(f"🎯 Target: All remaining tweets (will run until database is complete)")
 
@@ -85,7 +85,7 @@ def main():
     print(f"Finished: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Duration: {hours:.1f} hours")
     print(f"✅ Batches completed: {successful_batches}")
-    print(f"📈 Tweets processed: ~{successful_batches * 100000:,}")
+    print(f"📈 Tweets processed: ~{successful_batches * 50000:,}")
     print(f"💡 Note: Some batches may have timed out, but data was saved!")
     print(f"{'='*80}\n")
 
