@@ -501,13 +501,28 @@ def sync_tweets_from_supabase(limit: int = 10000):
 
     print(f"✅ Generated {len(all_embeddings):,} embeddings\n")
 
-    # Step 5: Add all embeddings to database
+    # Step 5: Add embeddings to database in chunks to keep heartbeat alive
     print(f"🗄️  Adding {len(all_embeddings):,} embeddings to database...")
-    db.add(all_embeddings, all_metadata)
+    CHUNK_SIZE = 250  # Add 250 vectors at a time to avoid heartbeat timeout
+    total_chunks = (len(all_embeddings) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
-    # Step 6: Final save and commit
-    print("💾 Final save to persistent storage...")
-    db.save("/data")
+    for i in range(0, len(all_embeddings), CHUNK_SIZE):
+        chunk_embeddings = all_embeddings[i:i+CHUNK_SIZE]
+        chunk_metadata = all_metadata[i:i+CHUNK_SIZE]
+        chunk_num = i // CHUNK_SIZE + 1
+
+        print(f"   Adding chunk {chunk_num}/{total_chunks} ({len(chunk_embeddings)} vectors)...")
+        db.add(chunk_embeddings, chunk_metadata)
+
+        # Save after each chunk to ensure progress is preserved
+        if chunk_num % 3 == 0 or chunk_num == total_chunks:
+            print(f"   💾 Saving progress... ({db.count():,} total vectors)")
+            db.save("/data")
+
+    print(f"✅ All embeddings added! Total vectors: {db.count():,}\n")
+
+    # Step 6: Final commit to persistent storage
+    print("💾 Final commit to persistent storage...")
     vector_volume.commit()
 
     print(f"\n🎉 Sync complete!")
