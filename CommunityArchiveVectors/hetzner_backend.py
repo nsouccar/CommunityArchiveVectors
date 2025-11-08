@@ -14,6 +14,7 @@ import pickle
 import time
 from typing import List, Optional
 import logging
+import numpy as np
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +50,9 @@ class SearchResult(BaseModel):
     similarity: float
     retweet_count: Optional[int] = 0
     favorite_count: Optional[int] = 0
+    reply_to_tweet_id: Optional[int] = None
+    parent_tweet_text: Optional[str] = None
+    parent_tweet_username: Optional[str] = None
 
 
 class SearchResponse(BaseModel):
@@ -170,15 +174,26 @@ async def search(
         # Generate embedding for query
         logger.info(f"🔍 Search query: '{query}'")
         result = vo_client.embed([query], model="voyage-3", input_type="query")
-        query_embedding = result.embeddings[0]
+        query_embedding = np.array([result.embeddings[0]], dtype=np.float32)  # Add batch dimension
 
         # Search database
-        results = db.search_f32(query_embedding, k=limit)
+        results = db.query_f32(query_embedding, k=limit)[0]  # Get first (and only) result
+        results = list(reversed(results))  # Reverse to show highest similarity first
 
         # Build response
         search_results = []
         for tweet_id, similarity in results:
             tweet_meta = metadata.get(tweet_id, {})
+
+            # Get parent tweet info if this is a reply
+            reply_to_id = tweet_meta.get("reply_to_tweet_id")
+            parent_text = None
+            parent_username = None
+
+            if reply_to_id:
+                parent_meta = metadata.get(reply_to_id, {})
+                parent_text = parent_meta.get("full_text")
+                parent_username = parent_meta.get("username")
 
             search_results.append(SearchResult(
                 tweet_id=tweet_id,
@@ -187,7 +202,10 @@ async def search(
                 created_at=tweet_meta.get("created_at"),
                 similarity=float(similarity),
                 retweet_count=tweet_meta.get("retweet_count", 0),
-                favorite_count=tweet_meta.get("favorite_count", 0)
+                favorite_count=tweet_meta.get("favorite_count", 0),
+                reply_to_tweet_id=reply_to_id,
+                parent_tweet_text=parent_text,
+                parent_tweet_username=parent_username
             ))
 
         search_time = (time.time() - start_time) * 1000

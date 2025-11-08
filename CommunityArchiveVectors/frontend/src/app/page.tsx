@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 
 interface SearchResult {
   tweet_id: number
@@ -10,6 +11,9 @@ interface SearchResult {
   similarity: number
   retweet_count?: number
   favorite_count?: number
+  reply_to_tweet_id?: number
+  parent_tweet_text?: string
+  parent_tweet_username?: string
 }
 
 interface SearchResponse {
@@ -75,7 +79,15 @@ export default function Home() {
       {/* Header */}
       <div className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-4xl mx-auto px-4 py-6">
-          <h1 className="text-3xl font-bold text-gray-900">Tweet Search</h1>
+          <div className="flex justify-between items-center mb-2">
+            <h1 className="text-3xl font-bold text-gray-900">Tweet Search</h1>
+            <Link
+              href="/network"
+              className="px-4 py-2 bg-purple-500 text-white rounded-md hover:bg-purple-600 transition-colors font-medium"
+            >
+              View Network →
+            </Link>
+          </div>
           <p className="text-gray-600 mt-1">
             Semantic search over {databaseSize?.toLocaleString() || '6.4M'} tweets
           </p>
@@ -125,6 +137,24 @@ export default function Home() {
               key={result.tweet_id}
               className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow"
             >
+              {/* Parent Tweet (if this is a reply) */}
+              {result.parent_tweet_text && (
+                <div className="mb-4 pl-4 border-l-2 border-gray-300 bg-gray-50 p-3 rounded">
+                  <div className="text-xs text-gray-500 mb-1">Replying to:</div>
+                  <div className="flex items-center space-x-2 mb-2">
+                    <div className="w-6 h-6 bg-gray-400 rounded-full flex items-center justify-center text-white text-xs font-bold">
+                      {result.parent_tweet_username?.[0].toUpperCase() || '?'}
+                    </div>
+                    <div className="text-sm font-semibold text-gray-700">
+                      @{result.parent_tweet_username || 'unknown'}
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600 italic">
+                    {result.parent_tweet_text}
+                  </p>
+                </div>
+              )}
+
               {/* Tweet Header */}
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center space-x-2">
@@ -150,11 +180,20 @@ export default function Home() {
                 {result.full_text}
               </p>
 
-              {/* Tweet Stats */}
-              <div className="flex items-center space-x-4 text-sm text-gray-500">
-                <span>🔄 {result.retweet_count?.toLocaleString() || 0} retweets</span>
-                <span>❤️ {result.favorite_count?.toLocaleString() || 0} likes</span>
-                <span>ID: {result.tweet_id}</span>
+              {/* Tweet Stats and Actions */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-4 text-sm text-gray-500">
+                  <span>🔄 {result.retweet_count?.toLocaleString() || 0} retweets</span>
+                  <span>❤️ {result.favorite_count?.toLocaleString() || 0} likes</span>
+                </div>
+                <a
+                  href={`https://x.com/${result.username}/status/${result.tweet_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors text-sm font-medium"
+                >
+                  View on Twitter
+                </a>
               </div>
             </div>
           ))}
