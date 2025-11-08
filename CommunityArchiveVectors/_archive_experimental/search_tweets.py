@@ -12,7 +12,7 @@ app = modal.App("search-tweets")
 
 image = (
     modal.Image.debian_slim()
-    .pip_install("corenn-py", "numpy", "openai")
+    .pip_install("corenn-py", "numpy", "voyageai")
 )
 
 vector_volume = modal.Volume.from_name("tweet-vectors-volume", create_if_missing=False)
@@ -21,7 +21,7 @@ vector_volume = modal.Volume.from_name("tweet-vectors-volume", create_if_missing
 @app.function(
     image=image,
     volumes={"/data": vector_volume},
-    secrets=[modal.Secret.from_name("openai-secret")],
+    secrets=[modal.Secret.from_name("tweet-vectors-secrets")],
     cpu=4.0,
     memory=16384,
     timeout=300,
@@ -40,7 +40,7 @@ def search_tweets(query: str, k: int = 10):
     from corenn_py import CoreNN
     import numpy as np
     import pickle
-    from openai import OpenAI
+    import voyageai
 
     vector_volume.reload()
 
@@ -59,15 +59,15 @@ def search_tweets(query: str, k: int = 10):
         total_vectors = metadata_pkg["count"]
     print(f"✅ Loaded metadata for {total_vectors:,} tweets\n")
 
-    # Step 3: Convert query to embedding
-    print("🔄 Converting query to embedding...")
-    client = OpenAI()
-    response = client.embeddings.create(
-        model="text-embedding-3-large",
-        input=query,
-        dimensions=1024
+    # Step 3: Convert query to embedding (using Voyage AI to match database)
+    print("🔄 Converting query to embedding with Voyage AI...")
+    vo = voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
+    result = vo.embed(
+        texts=[query],
+        model="voyage-3",
+        input_type="document"  # MUST match database! (not "query")
     )
-    query_embedding = response.data[0].embedding
+    query_embedding = result.embeddings[0]
 
     # Convert to 2D array (shape: [1, 1024]) for query_f32
     query_vector = np.array([query_embedding], dtype=np.float32)
