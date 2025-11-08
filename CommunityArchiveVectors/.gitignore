@@ -41,3 +41,8 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+# Large data files - pkl and numpy arrays
+*.pkl
+*.npy
+corenn_db/
