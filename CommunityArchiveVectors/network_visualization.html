@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitter Network Evolution 2012-2025</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0a0e27;
+            color: #fff;
+        }
+
+        #container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            color: #00d4ff;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        #subtitle {
+            text-align: center;
+            color: #8892b0;
+            font-size: 1.2em;
+            margin-bottom: 30px;
+        }
+
+        #viz-container {
+            position: relative;
+            background: #1a1f3a;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        svg {
+            display: block;
+            border-radius: 12px;
+        }
+
+        .node {
+            stroke: #fff;
+            stroke-width: 1.5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .node:hover {
+            stroke-width: 3px;
+            stroke: #00d4ff;
+        }
+
+        .link {
+            stroke: #4a5568;
+            stroke-opacity: 0.3;
+            stroke-width: 1px;
+        }
+
+        .link-strong {
+            stroke-opacity: 0.6;
+            stroke-width: 2px;
+        }
+
+        #controls {
+            text-align: center;
+            margin: 30px 0;
+            padding: 20px;
+            background: #1a1f3a;
+            border-radius: 12px;
+        }
+
+        button {
+            background: #00d4ff;
+            color: #0a0e27;
+            border: none;
+            padding: 12px 30px;
+            font-size: 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin: 0 10px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background: #00b8e6;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.4);
+        }
+
+        button:disabled {
+            background: #4a5568;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #stats {
+            display: flex;
+            justify-content: space-around;
+            margin: 30px 0;
+            gap: 20px;
+        }
+
+        .stat-box {
+            flex: 1;
+            background: #1a1f3a;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+
+        .stat-label {
+            color: #8892b0;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 5px;
+        }
+
+        #legend {
+            margin: 20px 0;
+            padding: 20px;
+            background: #1a1f3a;
+            border-radius: 12px;
+        }
+
+        #legend h3 {
+            margin-top: 0;
+            color: #00d4ff;
+        }
+
+        .legend-item {
+            display: inline-flex;
+            align-items: center;
+            margin: 5px 15px 5px 0;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 8px;
+            border: 2px solid #fff;
+        }
+
+        #year-display {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 4em;
+            font-weight: bold;
+            color: rgba(0, 212, 255, 0.3);
+            pointer-events: none;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(26, 31, 58, 0.95);
+            border: 2px solid #00d4ff;
+            border-radius: 8px;
+            padding: 10px;
+            pointer-events: none;
+            font-size: 14px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>Twitter Network Evolution</h1>
+        <div id="subtitle">How online communities formed and connected over time (2012-2025)</div>
+
+        <div id="stats">
+            <div class="stat-box">
+                <div class="stat-value" id="stat-year">2012</div>
+                <div class="stat-label">Year</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="stat-users">0</div>
+                <div class="stat-label">Users</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="stat-interactions">0</div>
+                <div class="stat-label">Interactions</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="stat-communities">0</div>
+                <div class="stat-label">Communities</div>
+            </div>
+        </div>
+
+        <div id="viz-container">
+            <div id="year-display">2012</div>
+            <svg id="network"></svg>
+        </div>
+
+        <div id="controls">
+            <button id="play-btn">Play Animation</button>
+            <button id="prev-btn">Previous Year</button>
+            <button id="next-btn">Next Year</button>
+            <button id="reset-btn">Reset</button>
+        </div>
+
+        <div id="legend">
+            <h3>Network Visualization Guide</h3>
+            <p style="color: #8892b0; margin-bottom: 15px;">
+                Each circle represents a user. Colors indicate which community they belong to.
+                Lines show reply interactions between users. Thicker lines = more interactions.
+                Communities are groups of users who frequently interact with each other.
+            </p>
+            <div id="legend-communities"></div>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        // Configuration
+        const width = 1400;
+        const height = 800;
+        let currentYearIndex = 0;
+        let isPlaying = false;
+        let animationInterval = null;
+
+        // Color scale for communities
+        const colorScale = d3.scaleOrdinal(d3.schemeTableau10)
+            .domain(d3.range(0, 20));
+
+        // Setup SVG
+        const svg = d3.select("#network")
+            .attr("width", width)
+            .attr("height", height);
+
+        const g = svg.append("g");
+
+        // Add zoom
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 10])
+            .on("zoom", (event) => {
+                g.attr("transform", event.transform);
+            });
+
+        svg.call(zoom);
+
+        // Load data
+        let networksData = null;
+
+        d3.json("network_animation_data.json").then(data => {
+            networksData = data.years;
+            console.log("Loaded data for years:", data.metadata.years_covered);
+
+            // Start with first year
+            updateVisualization(0);
+            updateControls();
+        });
+
+        function updateVisualization(yearIndex) {
+            if (!networksData || yearIndex >= networksData.length) return;
+
+            const yearData = networksData[yearIndex];
+            currentYearIndex = yearIndex;
+
+            // Update stats
+            d3.select("#stat-year").text(yearData.year);
+            d3.select("#stat-users").text(yearData.num_users.toLocaleString());
+            d3.select("#stat-interactions").text(yearData.num_interactions.toLocaleString());
+            d3.select("#stat-communities").text(yearData.num_communities);
+            d3.select("#year-display").text(yearData.year);
+
+            // Update legend
+            updateLegend(yearData.num_communities);
+
+            // Prepare data
+            const nodes = yearData.nodes.map(d => ({...d}));
+            const links = yearData.edges.map(d => ({...d}));
+
+            // Create force simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force("link", d3.forceLink(links).id(d => d.id).distance(50))
+                .force("charge", d3.forceManyBody().strength(-100))
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .force("collision", d3.forceCollide().radius(8));
+
+            // Update links
+            const link = g.selectAll(".link")
+                .data(links, d => `${d.source.id || d.source}-${d.target.id || d.target}`);
+
+            link.exit().remove();
+
+            const linkEnter = link.enter()
+                .append("line")
+                .attr("class", d => d.weight > 5 ? "link link-strong" : "link")
+                .attr("stroke-width", d => Math.min(d.weight / 2, 4));
+
+            const linkMerge = linkEnter.merge(link);
+
+            // Update nodes
+            const node = g.selectAll(".node")
+                .data(nodes, d => d.id);
+
+            node.exit().remove();
+
+            const nodeEnter = node.enter()
+                .append("circle")
+                .attr("class", "node")
+                .attr("r", d => Math.max(4, Math.min(d.degree, 15)))
+                .attr("fill", d => colorScale(d.community))
+                .on("mouseover", showTooltip)
+                .on("mouseout", hideTooltip)
+                .call(drag(simulation));
+
+            const nodeMerge = nodeEnter.merge(node)
+                .attr("fill", d => colorScale(d.community))
+                .attr("r", d => Math.max(4, Math.min(d.degree, 15)));
+
+            // Update positions on tick
+            simulation.on("tick", () => {
+                linkMerge
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+
+                nodeMerge
+                    .attr("cx", d => d.x)
+                    .attr("cy", d => d.y);
+            });
+        }
+
+        function updateLegend(numCommunities) {
+            const legendDiv = d3.select("#legend-communities");
+            legendDiv.selectAll("*").remove();
+
+            const communities = d3.range(0, Math.min(numCommunities, 10));
+
+            communities.forEach(comm => {
+                const item = legendDiv.append("div")
+                    .attr("class", "legend-item");
+
+                item.append("div")
+                    .attr("class", "legend-color")
+                    .style("background-color", colorScale(comm));
+
+                item.append("span")
+                    .text(`Community ${comm + 1}`);
+            });
+
+            if (numCommunities > 10) {
+                legendDiv.append("div")
+                    .style("margin-top", "10px")
+                    .style("color", "#8892b0")
+                    .text(`+ ${numCommunities - 10} more communities`);
+            }
+        }
+
+        function showTooltip(event, d) {
+            const tooltip = d3.select("#tooltip");
+            tooltip
+                .style("display", "block")
+                .style("left", (event.pageX + 10) + "px")
+                .style("top", (event.pageY - 10) + "px")
+                .html(`
+                    <strong>@${d.id}</strong><br/>
+                    Community: ${d.community + 1}<br/>
+                    Connections: ${d.degree}
+                `);
+        }
+
+        function hideTooltip() {
+            d3.select("#tooltip").style("display", "none");
+        }
+
+        function drag(simulation) {
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+
+            return d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended);
+        }
+
+        // Controls
+        d3.select("#play-btn").on("click", () => {
+            if (isPlaying) {
+                stopAnimation();
+            } else {
+                startAnimation();
+            }
+        });
+
+        d3.select("#prev-btn").on("click", () => {
+            if (currentYearIndex > 0) {
+                updateVisualization(currentYearIndex - 1);
+                updateControls();
+            }
+        });
+
+        d3.select("#next-btn").on("click", () => {
+            if (currentYearIndex < networksData.length - 1) {
+                updateVisualization(currentYearIndex + 1);
+                updateControls();
+            }
+        });
+
+        d3.select("#reset-btn").on("click", () => {
+            stopAnimation();
+            updateVisualization(0);
+            updateControls();
+        });
+
+        function startAnimation() {
+            isPlaying = true;
+            d3.select("#play-btn").text("Pause");
+
+            animationInterval = setInterval(() => {
+                if (currentYearIndex < networksData.length - 1) {
+                    updateVisualization(currentYearIndex + 1);
+                    updateControls();
+                } else {
+                    stopAnimation();
+                }
+            }, 2000); // Change year every 2 seconds
+        }
+
+        function stopAnimation() {
+            isPlaying = false;
+            d3.select("#play-btn").text("Play Animation");
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+            }
+        }
+
+        function updateControls() {
+            d3.select("#prev-btn").property("disabled", currentYearIndex === 0);
+            d3.select("#next-btn").property("disabled",
+                currentYearIndex === networksData.length - 1);
+        }
+    </script>
+</body>
+</html>
