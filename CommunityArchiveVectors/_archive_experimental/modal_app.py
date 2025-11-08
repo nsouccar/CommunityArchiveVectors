@@ -1,11 +1,12 @@
 """
 Tweet Vector Database on Modal
 - Voyage AI embeddings (1024 dimensions)
-- In-memory vector storage with FAISS
+- Persistent vector storage with CoreNN
 - Semantic search API
 - Auto-sync from Supabase
+- Scales to billions of vectors
 
-Note: Using FAISS instead of Milvus for better Modal compatibility
+Note: Using CoreNN for billion-scale vector search on commodity hardware
 """
 
 import modal
@@ -23,7 +24,7 @@ vector_volume = modal.Volume.from_name("tweet-vectors-storage", create_if_missin
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "voyageai",
     "supabase",
-    "faiss-cpu",  # Facebook AI Similarity Search
+    "corenn-py",  # CoreNN for billion-scale vector search
     "numpy",
     "fastapi",
     "pydantic",
@@ -47,16 +48,28 @@ secrets = modal.Secret.from_name("tweet-vectors-secrets")
 def generate_voyage_embeddings(texts: List[str]) -> List[List[float]]:
     """Generate Voyage AI embeddings for a batch of texts (documents to be indexed)"""
     import voyageai
+    import time
 
     vo = voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
 
-    result = vo.embed(
-        texts=texts,
-        model="voyage-3",  # 1024 dimensions
-        input_type="document"  # For tweets being indexed
-    )
-
-    return result.embeddings
+    # Retry logic for network failures
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            result = vo.embed(
+                texts=texts,
+                model="voyage-3",  # 1024 dimensions
+                input_type="document"  # For tweets being indexed
+            )
+            return result.embeddings
+        except (voyageai.error.APIConnectionError, Exception) as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                print(f"⚠️  Voyage AI connection error (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"❌ Voyage AI failed after {max_retries} attempts")
+                raise
 
 
 @app.function(
@@ -81,92 +94,127 @@ def generate_query_embedding(query: str) -> List[float]:
 
 
 # ============================================================================
-# VECTOR DATABASE (FAISS)
+# VECTOR DATABASE (CoreNN)
 # ============================================================================
 
 class VectorDB:
-    """Simple vector database using FAISS with HNSW for fast search"""
+    """Billion-scale vector database using CoreNN for fast approximate nearest neighbor search"""
 
     def __init__(self):
-        import faiss
-        import numpy as np
-
         self.dimension = 1024  # Voyage-3 dimensions
-        # Use HNSW index for much faster search (approximate nearest neighbors)
-        # M=32: number of connections per layer (higher = better accuracy, more memory)
-        # efSearch will be set dynamically during search
-        self.index = faiss.IndexHNSWFlat(self.dimension, 32, faiss.METRIC_INNER_PRODUCT)
-        self.index.hnsw.efConstruction = 200  # Quality of index construction
-        self.metadata = []  # Store tweet metadata
+        self.db = None  # CoreNN database
+        self.metadata = {}  # Store tweet metadata keyed by tweet_id
+        self.db_path = None
+        self._count = 0  # Track number of vectors
 
-    def add(self, embeddings: List[List[float]], metadata: List[Dict]):
+    def add(self, embeddings: List[List[float]], metadata_list: List[Dict]):
         """Add vectors and metadata to index"""
         import numpy as np
-        import faiss
+        from corenn_py import CoreNN
 
+        # Create database if it doesn't exist
+        if self.db is None:
+            raise RuntimeError("Database not initialized. Call save() first to set path.")
+
+        # Prepare keys (use tweet_id as string key)
+        keys = [meta["tweet_id"] for meta in metadata_list]
+
+        # Prepare vectors
         vectors = np.array(embeddings, dtype=np.float32)
 
-        # Normalize for cosine similarity
-        faiss.normalize_L2(vectors)
+        # Normalize for cosine similarity (CoreNN uses L2 distance, normalized L2 = cosine)
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1  # Avoid division by zero
+        vectors = vectors / norms
 
-        self.index.add(vectors)
-        self.metadata.extend(metadata)
+        # Insert vectors (CoreNN handles insertion)
+        self.db.insert_f32(keys, vectors)
+
+        # Store metadata
+        for meta in metadata_list:
+            self.metadata[meta["tweet_id"]] = meta
+
+        self._count += len(keys)
 
     def search(self, query_embedding: List[float], limit: int = 10):
-        """Search for similar vectors with optimized HNSW parameters"""
+        """Search for similar vectors"""
         import numpy as np
-        import faiss
 
+        if self.db is None:
+            return []
+
+        # Normalize query vector
         query_vector = np.array([query_embedding], dtype=np.float32)
-        faiss.normalize_L2(query_vector)
+        norm = np.linalg.norm(query_vector)
+        if norm > 0:
+            query_vector = query_vector / norm
 
-        # Set efSearch for better quality (higher = better accuracy, slower search)
-        # For 10k vectors, ef=100 gives good balance
-        if hasattr(self.index, 'hnsw'):
-            self.index.hnsw.efSearch = 100
+        # Query CoreNN (returns list of lists of (key, distance) tuples)
+        results_list = self.db.query_f32(query_vector, limit)
 
-        scores, indices = self.index.search(query_vector, limit)
-
+        # Process results
         results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx >= 0 and idx < len(self.metadata):  # Check for valid index
-                result = self.metadata[idx].copy()
-                result["score"] = float(score)
-                results.append(result)
+        if len(results_list) > 0:
+            for key, distance in results_list[0]:  # First query's results
+                # Convert distance to similarity score
+                # For normalized vectors with L2 distance: similarity = 1 - (distance^2 / 4)
+                # But simpler: similarity ≈ 1 - distance/2 (since distance is in [0, 2] for normalized vectors)
+                similarity = max(0.0, 1.0 - (distance / 2.0))
+
+                # Get metadata
+                if key in self.metadata:
+                    result = self.metadata[key].copy()
+                    result["score"] = similarity
+                    results.append(result)
 
         return results
 
     def save(self, path: str):
-        """Save index and metadata to disk"""
-        import faiss
-        import pickle
-
-        # Save FAISS index
-        faiss.write_index(self.index, f"{path}/index.faiss")
-
-        # Save metadata
-        with open(f"{path}/metadata.pkl", "wb") as f:
-            pickle.dump(self.metadata, f)
-
-    def load(self, path: str):
-        """Load index and metadata from disk"""
-        import faiss
+        """Save database and metadata to disk"""
         import pickle
         import os
+        from corenn_py import CoreNN
 
-        index_path = f"{path}/index.faiss"
+        os.makedirs(path, exist_ok=True)
+
+        # Create or update CoreNN database
+        db_path = f"{path}/corenn_db"
+        if self.db is None:
+            # Create new database
+            self.db = CoreNN.create(db_path, {"dim": self.dimension})
+            self.db_path = db_path
+        # Note: CoreNN automatically persists data, no explicit save needed
+
+        # Save metadata separately
+        with open(f"{path}/metadata.pkl", "wb") as f:
+            pickle.dump({"metadata": self.metadata, "count": self._count}, f)
+
+    def load(self, path: str):
+        """Load database and metadata from disk"""
+        import pickle
+        import os
+        from corenn_py import CoreNN
+
+        db_path = f"{path}/corenn_db"
         metadata_path = f"{path}/metadata.pkl"
 
-        if os.path.exists(index_path) and os.path.exists(metadata_path):
-            self.index = faiss.read_index(index_path)
+        if os.path.exists(db_path) and os.path.exists(metadata_path):
+            # Open existing CoreNN database
+            self.db = CoreNN.open(db_path)
+            self.db_path = db_path
+
+            # Load metadata
             with open(metadata_path, "rb") as f:
-                self.metadata = pickle.load(f)
+                data = pickle.load(f)
+                self.metadata = data.get("metadata", {})
+                self._count = data.get("count", len(self.metadata))
+
             return True
         return False
 
     def count(self):
         """Get number of vectors"""
-        return self.index.ntotal
+        return self._count
 
 
 class TopicsCache:
@@ -234,7 +282,7 @@ class TopicsCache:
     image=image,
     secrets=[secrets],
     volumes={"/data": vector_volume},
-    timeout=7200,  # 2 hours
+    timeout=5400,  # 90 minutes (100K batches take ~60 mins, 30 min buffer)
 )
 def sync_tweets_from_supabase(limit: int = 10000):
     """
@@ -248,7 +296,7 @@ def sync_tweets_from_supabase(limit: int = 10000):
     import re
 
     print(f"🚀 Starting sync...")
-    print(f"📅 Fetching ALL tweets from October 1, 2025 onwards (limit={limit:,} if specified)\n")
+    print(f"📅 Fetching ALL tweets from entire archive (limit={limit:,} if specified)\n")
 
     # Connect to Supabase
     supabase = create_client(
@@ -279,39 +327,59 @@ def sync_tweets_from_supabase(limit: int = 10000):
             return result.data[0]["username"]
         return account_id
 
-    # Step 1: Fetch tweets
-    print(f"📥 Fetching up to {limit:,} tweets from Supabase (from October 1, 2025 onwards)...")
+    # Step 1: Fetch tweets using cursor-based pagination (avoids timeout on large offsets)
+    # Start from the highest tweet_id already in database to skip processed tweets
+    max_existing_tweet_id = None
+    if db.metadata:
+        max_existing_tweet_id = max(db.metadata.keys())
+        print(f"📊 Starting from tweet_id > {max_existing_tweet_id} (skipping already processed tweets)")
+
+    print(f"📥 Fetching up to {limit:,} tweets from Supabase...")
     all_tweets = []
-    offset = 0
+    last_tweet_id = max_existing_tweet_id  # Start cursor from last processed tweet
     batch_size = 1000
 
-    # Fetch tweets up to the limit
+    # Fetch tweets up to the limit using cursor-based pagination
     while len(all_tweets) < limit:
         fetch_count = min(batch_size, limit - len(all_tweets))
 
-        response = supabase.table("tweets").select(
+        # Build query with cursor (ordered by tweet_id for consistency)
+        query = supabase.table("tweets").select(
             "tweet_id, full_text, reply_to_tweet_id, created_at, account_id, "
             "retweet_count, favorite_count"
-        ).gte(
-            "created_at", "2025-10-01"
-        ).order(
-            "created_at", desc=False
-        ).range(
-            offset, offset + fetch_count - 1
-        ).execute()
+        ).order("tweet_id", desc=False).limit(fetch_count)
+
+        # Always fetch tweets after the cursor (either max existing or last fetched)
+        if last_tweet_id is not None:
+            query = query.gt("tweet_id", last_tweet_id)
+
+        response = query.execute()
 
         if not response.data or len(response.data) == 0:
             break
 
         all_tweets.extend(response.data)
-        offset += len(response.data)
-        print(f"   Fetched {len(all_tweets):,} tweets...")
+        # Update cursor to the last tweet's ID
+        last_tweet_id = response.data[-1]["tweet_id"]
+        print(f"   Fetched {len(all_tweets):,} tweets... (cursor: {last_tweet_id})")
 
         if len(response.data) < fetch_count:
             break
 
     tweets = all_tweets
     print(f"✅ Retrieved {len(tweets):,} tweets\n")
+
+    # Filter out tweets already in the database
+    existing_tweet_ids = set(db.metadata.keys())
+    tweets_before = len(tweets)
+    tweets = [t for t in tweets if t["tweet_id"] not in existing_tweet_ids]
+    if tweets_before > len(tweets):
+        print(f"⏭️  Skipped {tweets_before - len(tweets):,} tweets already in database")
+        print(f"📝 Processing {len(tweets):,} new tweets\n")
+
+    if len(tweets) == 0:
+        print("✅ No new tweets to process!")
+        return
 
     # Step 2: Get usernames in batches (much faster than one-by-one)
     print("👤 Fetching usernames...")
@@ -334,45 +402,93 @@ def sync_tweets_from_supabase(limit: int = 10000):
 
     print(f"✅ Found {len(username_map):,} usernames\n")
 
-    # Step 3: Prepare embeddings data (standalone tweets, no thread context)
-    print("🔄 Preparing embeddings (standalone tweets)...")
+    # Step 3: Fetch parent tweets for replies
+    print("🔗 Fetching parent tweets for replies...")
+    parent_tweet_ids = [t["reply_to_tweet_id"] for t in tweets if t.get("reply_to_tweet_id")]
+    unique_parent_ids = list(set(parent_tweet_ids))
+    parent_tweets_map = {}
+
+    if unique_parent_ids:
+        # Fetch parent tweets in batches
+        batch_size = 1000
+        for i in range(0, len(unique_parent_ids), batch_size):
+            batch_ids = unique_parent_ids[i:i+batch_size]
+            response = supabase.table("tweets").select("tweet_id, full_text").in_("tweet_id", batch_ids).execute()
+
+            for parent in response.data:
+                parent_tweets_map[parent["tweet_id"]] = parent["full_text"]
+
+            if (i + batch_size) % 10000 == 0 or (i + batch_size) >= len(unique_parent_ids):
+                print(f"   Fetched {min(i + batch_size, len(unique_parent_ids)):,}/{len(unique_parent_ids):,} parent tweets...")
+
+    print(f"✅ Found {len(parent_tweets_map):,} parent tweets\n")
+
+    # Helper: Create contextual text with reply context
+    def create_contextual_text(tweet_text: str, parent_text: str = None) -> str:
+        """
+        Create embedding text with reply context
+
+        Examples:
+        - Original tweet: "Great point!"
+        - With parent: "AI is transforming coding\n\n[REPLY]: Great point!"
+        """
+        cleaned_tweet = clean_text(tweet_text)
+
+        if parent_text:
+            cleaned_parent = clean_text(parent_text)
+            # Include parent context for better semantic understanding
+            return f"{cleaned_parent}\n\n[REPLY]: {cleaned_tweet}"
+
+        return cleaned_tweet
+
+    # Step 4: Prepare embeddings data with reply context
+    print("🔄 Preparing embeddings with reply context...")
     texts_to_embed = []
     metadata_list = []
 
     for tweet in tweets:
-        # Just embed the cleaned current tweet text (no parent context)
-        cleaned_current = clean_text(tweet["full_text"])
+        # Create contextual text (with parent if it's a reply)
+        parent_text = None
+        if tweet.get("reply_to_tweet_id"):
+            parent_text = parent_tweets_map.get(tweet["reply_to_tweet_id"])
 
-        if not cleaned_current:
+        contextual_text = create_contextual_text(tweet["full_text"], parent_text)
+
+        if not contextual_text:
             continue  # Skip empty tweets after cleaning
 
-        texts_to_embed.append(cleaned_current)
+        texts_to_embed.append(contextual_text)
 
         metadata_list.append({
             "tweet_id": tweet["tweet_id"],
             "full_text": tweet["full_text"][:5000],
-            "thread_context": cleaned_current[:10000],  # Same as cleaned text for standalone
+            "thread_context": contextual_text[:10000],  # Store the full context used for embedding
+            "reply_to_tweet_id": tweet.get("reply_to_tweet_id", ""),
+            "parent_text": parent_text[:5000] if parent_text else "",
             "thread_root_id": "",  # Not available in database
             "depth": 0,  # Not available in database
-            "is_root": True,  # All treated as standalone
+            "is_root": not bool(tweet.get("reply_to_tweet_id")),  # Root if not a reply
             "account_id": tweet.get("account_id", ""),
             "account_username": username_map.get(tweet.get("account_id", ""), tweet.get("account_id", "")),
             "favorite_count": tweet.get("favorite_count", 0),
             "retweet_count": tweet.get("retweet_count", 0),
             "created_at": tweet.get("created_at", ""),
             "processed_at": datetime.now().isoformat(),
-            "embedding_version": "voyage-3-standalone"
+            "embedding_version": "voyage-3-reply-context-v1"
         })
 
-    print(f"✅ Prepared {len(texts_to_embed):,} embeddings\n")
+    print(f"✅ Prepared {len(texts_to_embed):,} embeddings with reply context\n")
 
-    # Step 4: Generate embeddings in batches (sequentially to avoid rate limits)
+    # Step 4: Generate embeddings in batches
     print("🤖 Generating Voyage AI embeddings...")
     BATCH_SIZE = 128
 
     all_embeddings = []
+    all_metadata = []
+
     for i in range(0, len(texts_to_embed), BATCH_SIZE):
         batch_texts = texts_to_embed[i:i+BATCH_SIZE]
+        batch_metadata = metadata_list[i:i+BATCH_SIZE]
         batch_num = i//BATCH_SIZE + 1
         total_batches = (len(texts_to_embed) + BATCH_SIZE - 1)//BATCH_SIZE
 
@@ -381,16 +497,32 @@ def sync_tweets_from_supabase(limit: int = 10000):
 
         batch_embeddings = generate_voyage_embeddings.remote(batch_texts)
         all_embeddings.extend(batch_embeddings)
+        all_metadata.extend(batch_metadata)
 
     print(f"✅ Generated {len(all_embeddings):,} embeddings\n")
 
-    # Step 5: Add to vector DB
-    print("📤 Adding to vector index...")
-    db.add(all_embeddings, metadata_list)
+    # Step 5: Add embeddings to database in chunks to keep heartbeat alive
+    print(f"🗄️  Adding {len(all_embeddings):,} embeddings to database...")
+    CHUNK_SIZE = 250  # Add 250 vectors at a time to avoid heartbeat timeout
+    total_chunks = (len(all_embeddings) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
-    # Step 6: Save to disk
-    print("💾 Saving index to disk...")
-    db.save("/data")
+    for i in range(0, len(all_embeddings), CHUNK_SIZE):
+        chunk_embeddings = all_embeddings[i:i+CHUNK_SIZE]
+        chunk_metadata = all_metadata[i:i+CHUNK_SIZE]
+        chunk_num = i // CHUNK_SIZE + 1
+
+        print(f"   Adding chunk {chunk_num}/{total_chunks} ({len(chunk_embeddings)} vectors)...")
+        db.add(chunk_embeddings, chunk_metadata)
+
+        # Save after each chunk to ensure progress is preserved
+        if chunk_num % 3 == 0 or chunk_num == total_chunks:
+            print(f"   💾 Saving progress... ({db.count():,} total vectors)")
+            db.save("/data")
+
+    print(f"✅ All embeddings added! Total vectors: {db.count():,}\n")
+
+    # Step 6: Final commit to persistent storage
+    print("💾 Final commit to persistent storage...")
     vector_volume.commit()
 
     print(f"\n🎉 Sync complete!")
@@ -2067,56 +2199,48 @@ def rebuild_with_hnsw():
 )
 def inspect_embeddings(num_samples: int = 5):
     """Inspect stored embeddings and their metadata"""
-    import faiss
-    import pickle
     import os
 
-    print(f"🔍 Inspecting embeddings...")
+    print(f"🔍 Inspecting CoreNN database...")
 
-    # Load index and metadata
-    index_path = "/data/index.faiss"
-    metadata_path = "/data/metadata.pkl"
+    # Load CoreNN database and metadata
+    db = VectorDB()
 
-    if not os.path.exists(index_path) or not os.path.exists(metadata_path):
-        return {"error": "No index found"}
+    if not db.load("/data"):
+        return {"error": "No CoreNN database found at /data"}
 
-    print("📂 Loading index...")
-    index = faiss.read_index(index_path)
+    print(f"✅ Loaded CoreNN database with {len(db.metadata):,} vectors\n")
 
-    with open(metadata_path, "rb") as f:
-        metadata = pickle.load(f)
-
-    print(f"✅ Loaded index with {index.ntotal:,} vectors\n")
-
-    # Show index info
-    print("📊 Index Information:")
-    print(f"   Dimensions: {index.d}")
-    print(f"   Total vectors: {index.ntotal:,}")
-    print(f"   Index type: {type(index).__name__}\n")
+    # Show database info
+    print("📊 Database Information:")
+    print(f"   Dimensions: {db.dimension}")
+    print(f"   Total vectors: {len(db.metadata):,}")
+    print(f"   Database type: CoreNN (billion-scale vector search)\n")
 
     # Show sample embeddings
     print(f"📝 Sample Embeddings (first {num_samples}):")
-    for i in range(min(num_samples, index.ntotal)):
-        # Reconstruct vector from index
-        vector = index.reconstruct(int(i))
+    sample_count = min(num_samples, len(db.metadata))
 
-        # Get metadata
-        meta = metadata[i] if i < len(metadata) else {}
+    # Get first N tweet_ids from metadata
+    sample_tweet_ids = list(db.metadata.keys())[:sample_count]
 
-        print(f"\n--- Vector {i} ---")
+    for i, tweet_id in enumerate(sample_tweet_ids):
+        meta = db.metadata[tweet_id]
+
+        print(f"\n--- Vector {i} (Tweet ID: {tweet_id}) ---")
         print(f"Original tweet: {meta.get('full_text', 'N/A')[:150]}...")
         print(f"Cleaned/embedded text: {meta.get('thread_context', 'N/A')[:150]}...")
         print(f"Author: {meta.get('account_username', 'N/A')}")
-        print(f"Embedding (first 10 dims): {vector[:10].tolist()}")
-        print(f"Embedding magnitude: {(vector ** 2).sum() ** 0.5:.4f}")
+        print(f"Created: {meta.get('created_at', 'N/A')}")
+        print(f"Engagement: {meta.get('retweet_count', 0)} RTs, {meta.get('favorite_count', 0)} likes")
         print(f"Embedding version: {meta.get('embedding_version', 'N/A')}")
 
     return {
         "status": "success",
-        "total_vectors": int(index.ntotal),
-        "dimensions": int(index.d),
-        "index_type": type(index).__name__,
-        "samples_shown": min(num_samples, index.ntotal)
+        "total_vectors": len(db.metadata),
+        "dimensions": db.dimension,
+        "index_type": "CoreNN",
+        "samples_shown": sample_count
     }
 
 
