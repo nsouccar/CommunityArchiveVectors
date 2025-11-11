@@ -223,6 +223,38 @@ async def search(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/get_embeddings")
+async def get_embeddings(tweet_ids: List[int]):
+    """
+    Get vector embeddings for specific tweet IDs
+
+    Args:
+        tweet_ids: List of tweet IDs to get embeddings for
+
+    Returns:
+        Dictionary mapping tweet IDs to their embeddings
+    """
+    if not database_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="Database still loading, please wait..."
+        )
+
+    try:
+        # CoreNN doesn't have a direct "get by ID" method
+        # We'll need to iterate through the database to find specific IDs
+        # For now, return an error suggesting to use the search endpoint instead
+        raise HTTPException(
+            status_code=501,
+            detail="Direct embedding retrieval not implemented. CoreNN database doesn't support get-by-ID operations. Consider using the search endpoint instead."
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Get embeddings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
