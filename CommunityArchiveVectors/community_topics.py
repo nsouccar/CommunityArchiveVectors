@@ -95,8 +95,9 @@ def extract_keywords(texts, top_n=10):
     # Split into words and filter
     words = combined.split()
 
-    # Common stop words to filter out
+    # Common stop words to filter out (expanded list)
     stop_words = {
+        # Articles, prepositions, conjunctions
         'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
         'of', 'as', 'by', 'with', 'from', 'is', 'was', 'are', 'were', 'be',
         'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
@@ -109,7 +110,22 @@ def extract_keywords(texts, top_n=10):
         'https', 'http', 'co', 'get', 'like', 'amp', 'really', 'still', 'even',
         'much', 'any', 'because', 'about', 'into', 'through', 'during', 'before',
         'after', 'above', 'below', 'between', 'under', 'again', 'further', 'then',
-        'once', 'here', 'there', 'out', 'up', 'down', 'off', 'over', 'under'
+        'once', 'here', 'there', 'out', 'up', 'down', 'off', 'over',
+        # Additional common words that don't add meaning
+        'people', 'think', 'one', 'good', 'time', 'them', 'also', 'know', 'want',
+        'way', 'now', 'new', 'make', 'see', 'look', 'take', 'come', 'use', 'find',
+        'tell', 'ask', 'work', 'seem', 'feel', 'try', 'leave', 'call', 'back',
+        'thing', 'things', 'got', 'going', 'said', 'need', 'well', 'lot', 'lol',
+        'yeah', 'yes', 'say', 'says', 'thats', 'youre', 'theyre', 'cant', 'wont',
+        'doesnt', 'didnt', 'wasnt', 'werent', 'isnt', 'arent', 'havent', 'hasnt',
+        'hadnt', 'wouldnt', 'shouldnt', 'couldnt', 'theres', 'heres', 'whats',
+        'wheres', 'whos', 'hows', 'right', 'made', 'long', 'actually', 'kind',
+        'probably', 'maybe', 'something', 'someone', 'somewhere', 'anything',
+        'anyone', 'anywhere', 'everything', 'everyone', 'everywhere', 'nothing',
+        'nobody', 'nowhere', 'many', 'much', 'little', 'less', 'never', 'always',
+        'often', 'sometimes', 'usually', 'almost', 'already', 'yet', 'since',
+        'while', 'though', 'although', 'unless', 'until', 'whether', 'either',
+        'neither', 'nor', 'via', 'per', 'etc', 'day', 'year', 'today', 'ago'
     }
 
     # Count words, filtering stop words and short words
