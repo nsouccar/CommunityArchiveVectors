@@ -1,0 +1,10 @@
+Loading metadata.pkl...
+Loaded 6,399,999 tweets
+Loading community assignments...
+Traceback (most recent call last):
+  File "/Users/noasouccar/Desktop/FractalProjects/CommunityArchiveVectors/CommunityArchiveVectors/semantic_topic_discovery.py", line 143, in <module>
+    user_to_community = load_community_assignments()
+  File "/Users/noasouccar/Desktop/FractalProjects/CommunityArchiveVectors/CommunityArchiveVectors/semantic_topic_discovery.py", line 48, in load_community_assignments
+    with open('user_communities.pkl', 'rb') as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'user_communities.pkl'

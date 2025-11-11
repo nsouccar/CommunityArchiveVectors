@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/noasouccar/Desktop/FractalProjects/CommunityArchiveVectors/CommunityArchiveVectors/network_analysis.py", line 12, in <module>
+    import networkx as nx
+ModuleNotFoundError: No module named 'networkx'
