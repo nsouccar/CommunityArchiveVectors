@@ -275,15 +275,6 @@ export default function UserProfilePage() {
             })}
           </div>
         </div>
-
-        {/* Tweet Topics - Coming Soon */}
-        <div className="bg-black/80 backdrop-blur rounded-xl p-6 border border-white" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
-          <h2 className="text-2xl font-bold text-white mb-4">Tweet Topics</h2>
-          <div className="text-center py-8 text-gray-400">
-            <div className="text-4xl mb-3">🚀</div>
-            <p>Coming soon: Topics this user discusses, clustered by semantic similarity</p>
-          </div>
-        </div>
       </div>
     </div>
   )

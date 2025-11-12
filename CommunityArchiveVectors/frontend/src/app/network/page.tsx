@@ -27,6 +27,7 @@ export default function NetworkPage() {
   const [temporalAlignments, setTemporalAlignments] = useState<any>(null)
   const [lineageNames, setLineageNames] = useState<Record<number, string>>({})
   const [inactiveLineageMessage, setInactiveLineageMessage] = useState<string | null>(null)
+  const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({})
   const simulationRef = useRef<any>(null)
   const zoomToCommunityRef = useRef<((communityId: number) => void) | null>(null)
   const resetZoomRef = useRef<(() => void) | null>(null)
@@ -99,6 +100,15 @@ export default function NetworkPage() {
         setCommunityNames(data)
       })
       .catch(err => console.error('Error loading community names:', err))
+
+    // Load avatar URLs
+    fetch('/avatar_urls.json')
+      .then(res => res.json())
+      .then(data => {
+        console.log('Loaded avatar URLs:', Object.keys(data).length)
+        setAvatarUrls(data)
+      })
+      .catch(err => console.error('Error loading avatar URLs:', err))
 
     // Load temporal alignments
     fetch('/community_temporal_alignments.json')
@@ -212,7 +222,7 @@ export default function NetworkPage() {
     if (!svgRef.current) return
 
     const svg = d3.select(svgRef.current)
-    const nodes = svg.selectAll('circle')
+    const nodeGroups = svg.selectAll('.node-group')
 
     // Get the color scale (must match the one used in renderNetwork)
     const colorScale = d3.scaleOrdinal(d3.schemeTableau10)
@@ -221,23 +231,12 @@ export default function NetworkPage() {
     const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
 
     // Cancel any existing blinking animations
-    nodes.interrupt()
+    nodeGroups.interrupt()
 
-    nodes
+    // Update images
+    nodeGroups.selectAll('image')
       .transition()
       .duration(200)
-      .attr('fill', function(d: any) {
-        // Preserve user selection highlighting
-        if (selectedUser && d.id === selectedUser) return '#00d4ff'
-        if (selectedUser && userConnections.has(d.id)) return '#4dd0e1'
-
-        // Highlight nodes in hovered or selected community
-        if (highlightCommunity !== null && d.community === highlightCommunity) {
-          return d3.color(colorScale(String(d.community)))?.brighter(1.2).toString() || colorScale(String(d.community))
-        }
-
-        return colorScale(String(d.community))
-      })
       .attr('opacity', function(d: any) {
         // Preserve user selection dimming
         if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
@@ -247,6 +246,32 @@ export default function NetworkPage() {
         // Dim nodes not in the hovered/selected community
         if (highlightCommunity !== null && d.community !== highlightCommunity) {
           return 0.15
+        }
+
+        return 1
+      })
+
+    // Update border circles
+    nodeGroups.selectAll('circle')
+      .transition()
+      .duration(200)
+      .attr('stroke', function(d: any) {
+        // Preserve user selection highlighting
+        if (selectedUser && d.id === selectedUser) return '#00ff00'
+        if (selectedUser && userConnections.has(d.id)) return '#00d4ff'
+
+        // Use community color
+        return colorScale(String(d.community))
+      })
+      .attr('opacity', function(d: any) {
+        // Preserve user selection dimming
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.4
+        }
+
+        // Dim nodes not in the hovered/selected community
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.3
         }
 
         return 1
@@ -275,15 +300,17 @@ export default function NetworkPage() {
           return 3
         }
 
-        return 1.5
+        return 2
       })
 
     // Add blinking animation for highlighted community
     if (highlightCommunity !== null) {
-      const highlightedNodes = nodes.filter((d: any) => d.community === highlightCommunity)
+      const highlightedImages = nodeGroups
+        .filter((d: any) => d.community === highlightCommunity)
+        .selectAll('image')
 
       function blink() {
-        highlightedNodes
+        highlightedImages
           .transition()
           .duration(800)
           .attr('opacity', 0.6)
@@ -476,9 +503,32 @@ export default function NetworkPage() {
     const colorScale = d3.scaleOrdinal(d3.schemeTableau10)
         .domain(d3.range(0, 20).map(String))
 
-    // Prepare data
-    const nodes = yearData.nodes.map((d: any) => ({ ...d }))
-    const links = yearData.edges.map((d: any) => ({ ...d }))
+    // Prepare data - limit nodes for large graphs to prevent crashes
+    const MAX_NODES = 1500  // Render max 1500 nodes for performance
+    let nodes = yearData.nodes.map((d: any) => ({ ...d }))
+    let links = yearData.edges.map((d: any) => ({ ...d }))
+
+    // If graph is too large, filter to most connected nodes
+    if (nodes.length > MAX_NODES) {
+      console.log(`Large graph detected (${nodes.length} nodes). Limiting to top ${MAX_NODES} most connected nodes...`)
+
+      // Sort by degree (connection count) and take top N
+      const topNodes = nodes
+        .sort((a: any, b: any) => (b.degree || 0) - (a.degree || 0))
+        .slice(0, MAX_NODES)
+
+      const topNodeIds = new Set(topNodes.map((n: any) => n.id))
+
+      // Filter links to only include those between top nodes
+      links = links.filter((l: any) => {
+        const sourceId = l.source.id || l.source
+        const targetId = l.target.id || l.target
+        return topNodeIds.has(sourceId) && topNodeIds.has(targetId)
+      })
+
+      nodes = topNodes
+      console.log(`Reduced to ${nodes.length} nodes and ${links.length} edges`)
+    }
 
     // Create force simulation
     const simulation = d3.forceSimulation(nodes)
@@ -527,61 +577,28 @@ export default function NetworkPage() {
         return Math.min(d.weight / 2, 4)
       })
 
-    // Create nodes
-    const node = g.append('g')
-      .selectAll('circle')
+    // Create circular clip paths for profile images
+    const defs = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs')
+
+    // Add a circular clipPath for each unique user
+    nodes.forEach((d: any) => {
+      if (!defs.select(`#clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')}`).empty()) return
+
+      defs.append('clipPath')
+        .attr('id', `clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')}`)
+        .append('circle')
+        .attr('cx', 0)
+        .attr('cy', 0)
+        .attr('r', (selectedUser && d.id === selectedUser) ? Math.max(8, Math.min(d.degree, 20)) : Math.max(4, Math.min(d.degree, 15)))
+    })
+
+    // Create node groups (image + border circle)
+    const nodeGroup = g.append('g')
+      .attr('class', 'nodes')
+      .selectAll('g')
       .data(nodes)
-      .join('circle')
-      .attr('r', (d: any) => {
-        // Make selected user and their connections larger
-        if (selectedUser) {
-          if (d.id === selectedUser) return Math.max(8, Math.min(d.degree, 20))
-          if (userConnections.has(d.id)) return Math.max(6, Math.min(d.degree, 17))
-        }
-        return Math.max(4, Math.min(d.degree, 15))
-      })
-      .attr('fill', (d: any) => {
-        // Highlight selected user in bright cyan
-        if (selectedUser && d.id === selectedUser) return '#00d4ff'
-        // Highlight connections in lighter cyan
-        if (selectedUser && userConnections.has(d.id)) return '#4dd0e1'
-
-        // Use community ID for coloring (same for both view modes)
-        const colorId = String(d.community)
-
-        // Highlight nodes in hovered or selected community
-        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
-        if (highlightCommunity !== null && d.community === highlightCommunity) {
-          // Brighten nodes in the highlighted community
-          return d3.color(colorScale(colorId))?.brighter(0.8).toString() || colorScale(colorId)
-        }
-
-        return colorScale(colorId)
-      })
-      .attr('stroke', (d: any) => {
-        if (selectedUser && d.id === selectedUser) return '#00ff00' // Green ring for selected user
-        if (selectedUser && userConnections.has(d.id)) return '#00d4ff' // Cyan ring for connections
-        return '#fff'
-      })
-      .attr('stroke-width', (d: any) => {
-        if (selectedUser && d.id === selectedUser) return 3
-        if (selectedUser && userConnections.has(d.id)) return 2
-        return 1.5
-      })
-      .attr('opacity', (d: any) => {
-        // Dim nodes that are not selected or connected
-        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
-          return 0.2
-        }
-
-        // Dim nodes not in the hovered/selected community
-        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
-        if (highlightCommunity !== null && d.community !== highlightCommunity) {
-          return 0.2
-        }
-
-        return 1
-      })
+      .join('g')
+      .attr('class', 'node-group')
       .style('cursor', 'pointer')
       .on('mouseover', function(event, d: any) {
         // Find all connected nodes
@@ -623,11 +640,17 @@ export default function NetworkPage() {
             return Math.min(l.weight / 2, 4)
           })
 
-        // Highlight connected nodes
-        node
+        // Highlight connected nodes - update both images and circles
+        nodeGroup.selectAll('image')
           .attr('opacity', (n: any) => {
             if (connectedNodes.has(n.id)) return 1
             return 0.15 // Dim non-connected nodes
+          })
+
+        nodeGroup.selectAll('circle')
+          .attr('opacity', (n: any) => {
+            if (connectedNodes.has(n.id)) return 1
+            return 0.3
           })
           .attr('r', (n: any) => {
             if (n.id === d.id) return Math.max(10, Math.min(n.degree, 20)) // Larger for hovered
@@ -637,12 +660,13 @@ export default function NetworkPage() {
           .attr('stroke', (n: any) => {
             if (n.id === d.id) return '#00d4ff' // Cyan ring for hovered
             if (connectedNodes.has(n.id)) return '#4dd0e1' // Light cyan for connected
-            return '#fff'
+            // Use community color
+            return colorScale(String(n.community))
           })
           .attr('stroke-width', (n: any) => {
             if (n.id === d.id) return 4
             if (connectedNodes.has(n.id)) return 2.5
-            return 1.5
+            return 2
           })
 
         // Show tooltip
@@ -701,11 +725,27 @@ export default function NetworkPage() {
             return Math.min(l.weight / 2, 4)
           })
 
-        // Reset nodes to normal
-        node
+        // Reset nodes - update both images and circles
+        nodeGroup.selectAll('image')
           .attr('opacity', (n: any) => {
             if (selectedUser && n.id !== selectedUser && !userConnections.has(n.id)) {
               return 0.2
+            }
+            const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+            if (highlightCommunity !== null && n.community !== highlightCommunity) {
+              return 0.2
+            }
+            return 1
+          })
+
+        nodeGroup.selectAll('circle')
+          .attr('opacity', (n: any) => {
+            if (selectedUser && n.id !== selectedUser && !userConnections.has(n.id)) {
+              return 0.4
+            }
+            const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+            if (highlightCommunity !== null && n.community !== highlightCommunity) {
+              return 0.3
             }
             return 1
           })
@@ -719,15 +759,119 @@ export default function NetworkPage() {
           .attr('stroke', (n: any) => {
             if (selectedUser && n.id === selectedUser) return '#00ff00'
             if (selectedUser && userConnections.has(n.id)) return '#00d4ff'
-            return '#fff'
+            return colorScale(String(n.community))
           })
           .attr('stroke-width', (n: any) => {
             if (selectedUser && n.id === selectedUser) return 3
             if (selectedUser && userConnections.has(n.id)) return 2
-            return 1.5
+            const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+            if (highlightCommunity !== null && n.community === highlightCommunity) {
+              return 3
+            }
+            return 2
           })
 
+        // Remove tooltip
         d3.selectAll('.tooltip-network').remove()
+      })
+
+    // Add profile images from avatar URLs
+    nodeGroup.append('image')
+      .attr('xlink:href', (d: any) => avatarUrls[d.id] || '')
+      .attr('width', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return r * 2
+      })
+      .attr('height', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return r * 2
+      })
+      .attr('x', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return -r
+      })
+      .attr('y', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return -r
+      })
+      .attr('clip-path', (d: any) => `url(#clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')})`)
+      .attr('opacity', (d: any) => {
+        // Dim nodes that are not selected or connected
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.2
+        }
+
+        // Dim nodes not in the hovered/selected community
+        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.2
+        }
+
+        return 1
+      })
+      .on('error', function(this: any) {
+        // Fallback to colored circle if image fails to load
+        d3.select(this.parentNode).append('circle')
+          .attr('r', 8)
+          .attr('fill', '#666')
+          .attr('stroke', '#fff')
+          .attr('stroke-width', 2)
+      })
+
+    // Add community-colored border circles
+    const node = nodeGroup.append('circle')
+      .attr('r', (d: any) => {
+        // Make selected user and their connections larger
+        if (selectedUser) {
+          if (d.id === selectedUser) return Math.max(8, Math.min(d.degree, 20))
+          if (userConnections.has(d.id)) return Math.max(6, Math.min(d.degree, 17))
+        }
+        return Math.max(4, Math.min(d.degree, 15))
+      })
+      .attr('fill', 'none')
+      .attr('stroke', (d: any) => {
+        // Highlight selected user in bright cyan
+        if (selectedUser && d.id === selectedUser) return '#00ff00' // Green ring for selected user
+        // Highlight connections in lighter cyan
+        if (selectedUser && userConnections.has(d.id)) return '#00d4ff' // Cyan ring for connections
+
+        // Use community color for border
+        const colorId = String(d.community)
+        return colorScale(colorId)
+      })
+      .attr('stroke-width', (d: any) => {
+        if (selectedUser && d.id === selectedUser) return 3
+        if (selectedUser && userConnections.has(d.id)) return 2
+
+        // Thicker border for highlighted community
+        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+        if (highlightCommunity !== null && d.community === highlightCommunity) {
+          return 3
+        }
+
+        return 2
+      })
+      .attr('opacity', (d: any) => {
+        // Dim nodes that are not selected or connected
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.4
+        }
+
+        // Dim nodes not in the hovered/selected community
+        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.3
+        }
+
+        return 1
       })
       .on('click', function(event, d: any) {
         // Navigate to user profile page
@@ -746,9 +890,8 @@ export default function NetworkPage() {
         .attr('x2', (d: any) => d.target.x)
         .attr('y2', (d: any) => d.target.y)
 
-      node
-        .attr('cx', (d: any) => d.x)
-        .attr('cy', (d: any) => d.y)
+      nodeGroup
+        .attr('transform', (d: any) => `translate(${d.x},${d.y})`)
     })
 
     function dragstarted(event: any) {
@@ -1239,10 +1382,63 @@ export default function NetworkPage() {
                       key={idx}
                       className="bg-black/30 backdrop-blur-md border border-white/20 rounded-lg p-6 hover:bg-black/40 transition-all"
                     >
+                      {/* Parent Tweet (if this is a reply) */}
+                      {tweet.parent_tweet && (
+                        <div className="mb-4 pb-4 border-b border-white/10">
+                          <div className="flex items-center space-x-2 mb-2">
+                            <span className="text-xs text-gray-400">↪ Replying to:</span>
+                          </div>
+                          <div className="bg-black/20 rounded-lg p-4 border border-white/10">
+                            <div className="flex items-center space-x-2 mb-2">
+                              {tweet.parent_tweet.all_account?.profile_image_url ? (
+                                <img
+                                  src={tweet.parent_tweet.all_account.profile_image_url}
+                                  alt={`@${tweet.parent_tweet.all_account?.username || 'unknown'}`}
+                                  className="w-8 h-8 rounded-full"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                    e.currentTarget.nextElementSibling?.classList.remove('hidden');
+                                  }}
+                                />
+                              ) : null}
+                              <div className={`w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold ${tweet.parent_tweet.all_account?.profile_image_url ? 'hidden' : ''}`}>
+                                {tweet.parent_tweet.all_account?.username?.[0]?.toUpperCase() || '?'}
+                              </div>
+                              <div>
+                                <div className="font-semibold text-white text-sm">
+                                  @{tweet.parent_tweet.all_account?.username || 'unknown'}
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                  {tweet.parent_tweet.created_at ? new Date(tweet.parent_tweet.created_at).toLocaleDateString('en-US', {
+                                    year: 'numeric',
+                                    month: 'short',
+                                    day: 'numeric',
+                                  }) : 'Unknown date'}
+                                </div>
+                              </div>
+                            </div>
+                            <p className="text-gray-300 text-sm leading-relaxed">
+                              {tweet.parent_tweet.full_text || 'Tweet text unavailable'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Tweet Header */}
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center space-x-2">
-                          <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold">
+                          {tweet.all_account?.profile_image_url ? (
+                            <img
+                              src={tweet.all_account.profile_image_url}
+                              alt={`@${tweet.all_account?.username || 'unknown'}`}
+                              className="w-10 h-10 rounded-full"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                e.currentTarget.nextElementSibling?.classList.remove('hidden');
+                              }}
+                            />
+                          ) : null}
+                          <div className={`w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold ${tweet.all_account?.profile_image_url ? 'hidden' : ''}`}>
                             {tweet.all_account?.username?.[0]?.toUpperCase() || '?'}
                           </div>
                           <div>

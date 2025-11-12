@@ -721,7 +721,19 @@ export default function Home() {
                       <div className="mb-4 pl-4 border-l-2 border-white/30 bg-black/20 p-3 rounded">
                         <div className="text-xs text-gray-400 mb-1">Replying to:</div>
                         <div className="flex items-center space-x-2 mb-2">
-                          <div className="w-6 h-6 bg-gray-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
+                          {result.parent_tweet_profile_image_url ? (
+                            <img
+                              src={result.parent_tweet_profile_image_url}
+                              alt={`@${result.parent_tweet_username || 'unknown'}`}
+                              className="w-6 h-6 rounded-full"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.style.display = 'none';
+                                target.nextElementSibling?.classList.remove('hidden');
+                              }}
+                            />
+                          ) : null}
+                          <div className={`w-6 h-6 bg-gray-500 rounded-full ${result.parent_tweet_profile_image_url ? 'hidden' : ''} flex items-center justify-center text-white text-xs font-bold`}>
                             {result.parent_tweet_username?.[0].toUpperCase() || '?'}
                           </div>
                           <div className="text-sm font-semibold text-gray-300">
@@ -737,7 +749,19 @@ export default function Home() {
                     {/* Tweet Header */}
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center space-x-2">
-                        <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold">
+                        {result.profile_image_url ? (
+                          <img
+                            src={result.profile_image_url}
+                            alt={`@${result.username}`}
+                            className="w-10 h-10 rounded-full"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement;
+                              target.style.display = 'none';
+                              target.nextElementSibling?.classList.remove('hidden');
+                            }}
+                          />
+                        ) : null}
+                        <div className={`w-10 h-10 bg-purple-500 rounded-full ${result.profile_image_url ? 'hidden' : ''} flex items-center justify-center text-white font-bold`}>
                           {result.username[0].toUpperCase()}
                         </div>
                         <div>
