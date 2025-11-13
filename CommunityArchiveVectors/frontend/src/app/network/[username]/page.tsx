@@ -3,11 +3,15 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { useParams } from 'next/navigation'
+import { useParams, useSearchParams } from 'next/navigation'
+import { lugrasimo } from '../../fonts'
+import '../../retro.css'
 
 export default function UserProfilePage() {
   const params = useParams()
+  const searchParams = useSearchParams()
   const username = params.username as string
+  const returnYear = searchParams.get('returnYear')
   const [profileData, setProfileData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [imageError, setImageError] = useState(false)
@@ -129,28 +133,28 @@ export default function UserProfilePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen text-white flex items-center justify-center" style={{
+      <div className={`${lugrasimo.className} min-h-screen text-white flex items-center justify-center`} style={{
         backgroundImage: 'url(/stars.png)',
         backgroundSize: 'cover',
         backgroundPosition: 'center'
       }}>
-        <div className="text-white text-xl">Loading profile...</div>
+        <div className="retro-text text-xl" style={{ fontFamily: 'monospace' }}>LOADING PROFILE...</div>
       </div>
     )
   }
 
   if (!profileData || profileData.yearsActive.length === 0) {
     return (
-      <div className="min-h-screen text-white flex items-center justify-center" style={{
+      <div className={`${lugrasimo.className} min-h-screen text-white flex items-center justify-center`} style={{
         backgroundImage: 'url(/stars.png)',
         backgroundSize: 'cover',
         backgroundPosition: 'center'
       }}>
         <div className="text-center">
-          <h1 className="text-4xl font-bold text-red-400 mb-4">User Not Found</h1>
-          <p className="text-gray-400 mb-6">@{username} is not in the constellation network</p>
-          <Link href="/network" className="text-white hover:text-white/80">
-            ← Back to Constellation
+          <h1 className="text-4xl font-bold mb-4" style={{ color: '#ff0000' }}>USER NOT FOUND</h1>
+          <p className="retro-text-secondary mb-6" style={{ fontFamily: 'monospace' }}>@{username} IS NOT IN THE CONSTELLATION NETWORK</p>
+          <Link href={returnYear ? `/?year=${returnYear}` : "/"} className="retro-button px-6 py-3">
+            ← BACK TO CONSTELLATION
           </Link>
         </div>
       </div>
@@ -158,7 +162,7 @@ export default function UserProfilePage() {
   }
 
   return (
-    <div className="min-h-screen text-white p-8" style={{
+    <div className={`${lugrasimo.className} min-h-screen text-white p-8`} style={{
       backgroundImage: 'url(/stars.png)',
       backgroundSize: 'cover',
       backgroundPosition: 'center'
@@ -166,16 +170,16 @@ export default function UserProfilePage() {
       <div className="max-w-4xl mx-auto">
         {/* Navigation */}
         <div className="mb-8">
-          <Link href="/network" className="text-white hover:text-white/80 transition-colors">
-            ← Back to Constellation
+          <Link href={returnYear ? `/?year=${returnYear}` : "/"} className="retro-button px-6 py-3 inline-block">
+            ← BACK TO CONSTELLATION
           </Link>
         </div>
 
         {/* Profile Header */}
-        <div className="bg-black/80 backdrop-blur rounded-xl p-8 border border-white mb-8" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
+        <div className="retro-box p-8 mb-8">
           <div className="flex items-start gap-6">
             {/* Profile Photo */}
-            <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white flex-shrink-0 bg-gradient-to-br from-cyan-400 to-purple-400 flex items-center justify-center relative" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
+            <div className="w-32 h-32 overflow-hidden border-2 border-[#6b9080] flex-shrink-0 bg-gray-700 flex items-center justify-center relative">
               {!imageError ? (
                 <Image
                   src={`https://unavatar.io/x/${username}`}
@@ -187,7 +191,7 @@ export default function UserProfilePage() {
                   sizes="128px"
                 />
               ) : (
-                <div className="text-6xl font-bold text-white">
+                <div className="text-6xl font-bold text-black">
                   {username.charAt(0).toUpperCase()}
                 </div>
               )}
@@ -196,30 +200,30 @@ export default function UserProfilePage() {
             {/* Info */}
             <div className="flex-1">
               <h1 className="text-4xl font-bold mb-2">
-                <span className="text-white">@{username}</span>
+                <span className="retro-text" style={{ fontFamily: 'monospace' }}>@{username}</span>
                 {profileData.isSuperConnector && (
-                  <span className="ml-4 text-2xl px-4 py-1 bg-purple-500/30 border border-purple-400 rounded-full text-purple-300">
-                    Super Connector
+                  <span className="ml-4 text-lg px-4 py-1 bg-[#6b9080]/30 border-2 border-[#6b9080] retro-text" style={{ fontFamily: 'monospace' }}>
+                    SUPER CONNECTOR
                   </span>
                 )}
               </h1>
 
-              <p className="text-gray-400 mb-4">
-                Active from {profileData.yearsActive[0]} to {profileData.yearsActive[profileData.yearsActive.length - 1]}
+              <p className="retro-text-secondary mb-4" style={{ fontFamily: 'monospace' }}>
+                ACTIVE FROM {profileData.yearsActive[0]} TO {profileData.yearsActive[profileData.yearsActive.length - 1]}
               </p>
 
               <div className="grid grid-cols-3 gap-6">
-                <div className="bg-slate-900/50 rounded-lg p-4 border border-white" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
-                  <div className="text-3xl font-bold text-white">{profileData.yearsActive.length}</div>
-                  <div className="text-gray-400 text-sm">Years Active</div>
+                <div className="retro-card p-4">
+                  <div className="text-3xl font-bold retro-stat">{profileData.yearsActive.length}</div>
+                  <div className="retro-text-secondary text-sm" style={{ fontFamily: 'monospace' }}>YEARS ACTIVE</div>
                 </div>
-                <div className="bg-slate-900/50 rounded-lg p-4 border border-white" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
-                  <div className="text-3xl font-bold text-white">{profileData.avgConnections}</div>
-                  <div className="text-gray-400 text-sm">Avg Connections/Year</div>
+                <div className="retro-card p-4">
+                  <div className="text-3xl font-bold retro-stat">{profileData.avgConnections}</div>
+                  <div className="retro-text-secondary text-sm" style={{ fontFamily: 'monospace' }}>AVG CONNECTIONS</div>
                 </div>
-                <div className="bg-slate-900/50 rounded-lg p-4 border border-white" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
-                  <div className="text-3xl font-bold text-white">{profileData.avgBetweenness.toFixed(4)}</div>
-                  <div className="text-gray-400 text-sm">Betweenness Score</div>
+                <div className="retro-card p-4">
+                  <div className="text-3xl font-bold retro-stat">{profileData.avgBetweenness.toFixed(4)}</div>
+                  <div className="retro-text-secondary text-sm" style={{ fontFamily: 'monospace' }}>BETWEENNESS</div>
                 </div>
               </div>
             </div>
@@ -228,28 +232,28 @@ export default function UserProfilePage() {
 
         {/* Super Connector Info */}
         {profileData.isSuperConnector && (
-          <div className="bg-purple-900/30 backdrop-blur rounded-xl p-6 border border-purple-400/30 mb-8">
-            <h2 className="text-2xl font-bold text-purple-300 mb-3">Super Connector Status</h2>
-            <p className="text-gray-300 mb-4">
-              This user has high <strong>betweenness centrality</strong> (score: {profileData.avgBetweenness.toFixed(4)}),
-              meaning they frequently appear on the shortest paths between other people in the network.
+          <div className="retro-box p-6 mb-8 bg-[#6b9080]/10">
+            <h2 className="text-2xl font-bold retro-text mb-3" style={{ fontFamily: 'monospace' }}>SUPER CONNECTOR STATUS</h2>
+            <p className="text-[#e8dcc8] mb-4" style={{ fontFamily: 'monospace' }}>
+              THIS USER HAS HIGH <strong>BETWEENNESS CENTRALITY</strong> (SCORE: {profileData.avgBetweenness.toFixed(4)}),
+              MEANING THEY FREQUENTLY APPEAR ON THE SHORTEST PATHS BETWEEN OTHER PEOPLE IN THE NETWORK.
             </p>
-            <div className="text-sm text-gray-400">
-              <strong>What this means:</strong> Super connectors act as bridges between different communities.
-              They help information flow across the network and connect people who might not otherwise interact.
-              This makes them crucial nodes for network cohesion and cross-community communication.
+            <div className="text-sm retro-text-secondary" style={{ fontFamily: 'monospace' }}>
+              <strong>WHAT THIS MEANS:</strong> SUPER CONNECTORS ACT AS BRIDGES BETWEEN DIFFERENT COMMUNITIES.
+              THEY HELP INFORMATION FLOW ACROSS THE NETWORK AND CONNECT PEOPLE WHO MIGHT NOT OTHERWISE INTERACT.
+              THIS MAKES THEM CRUCIAL NODES FOR NETWORK COHESION AND CROSS-COMMUNITY COMMUNICATION.
             </div>
-            <div className="mt-3 text-xs text-gray-500">
-              <strong>Technical note:</strong> Betweenness centrality measures how often a node lies on the shortest
-              path between pairs of other nodes. Higher scores indicate greater importance as a network bridge.
+            <div className="mt-3 text-xs retro-text-secondary" style={{ fontFamily: 'monospace' }}>
+              <strong>TECHNICAL NOTE:</strong> BETWEENNESS CENTRALITY MEASURES HOW OFTEN A NODE LIES ON THE SHORTEST
+              PATH BETWEEN PAIRS OF OTHER NODES. HIGHER SCORES INDICATE GREATER IMPORTANCE AS A NETWORK BRIDGE.
             </div>
           </div>
         )}
 
         {/* Community Evolution */}
-        <div className="bg-black/80 backdrop-blur rounded-xl p-6 border border-white mb-8" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(255,255,255,0.3)' }}>
-          <h2 className="text-2xl font-bold text-white mb-4">Community Evolution</h2>
-          <p className="text-gray-400 mb-4">How this user's community membership changed over time:</p>
+        <div className="retro-box p-6 mb-8">
+          <h2 className="text-2xl font-bold retro-text mb-4" style={{ fontFamily: 'monospace' }}>COMMUNITY EVOLUTION</h2>
+          <p className="retro-text-secondary mb-4" style={{ fontFamily: 'monospace' }}>HOW THIS USER'S COMMUNITY MEMBERSHIP CHANGED OVER TIME:</p>
 
           <div className="space-y-3">
             {profileData.yearsActive.map((year: string) => {
@@ -258,16 +262,16 @@ export default function UserProfilePage() {
               const communityId = profileData.communities[year]
 
               return (
-                <div key={year} className="flex items-center gap-4 bg-slate-900/50 rounded-lg p-4 border border-white" style={{ boxShadow: '0 0 5px rgba(255,255,255,0.3)' }}>
-                  <div className="text-2xl font-bold text-white w-20">{year}</div>
+                <div key={year} className="flex items-center gap-4 retro-card p-4">
+                  <div className="text-2xl font-bold retro-text w-20" style={{ fontFamily: 'monospace' }}>{year}</div>
                   <div className="flex-1">
                     {lineageId !== null && lineageId !== undefined ? (
                       <>
-                        <div className="text-white font-semibold">Lineage {lineageId}</div>
-                        <div className="text-gray-400 text-sm">Community {communityId} - {communityName}</div>
+                        <div className="retro-text font-semibold" style={{ fontFamily: 'monospace' }}>LINEAGE {lineageId}</div>
+                        <div className="retro-text-secondary text-sm" style={{ fontFamily: 'monospace' }}>COMMUNITY {communityId} - {communityName.toUpperCase()}</div>
                       </>
                     ) : (
-                      <div className="text-white">{communityName || `Community ${communityId}`}</div>
+                      <div className="retro-text" style={{ fontFamily: 'monospace' }}>{communityName?.toUpperCase() || `COMMUNITY ${communityId}`}</div>
                     )}
                   </div>
                 </div>

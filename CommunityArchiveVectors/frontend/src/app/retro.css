@@ -1,0 +1,118 @@
+/* 1950s Retro Futurism Global Styles */
+
+/* Vintage color palette */
+.retro-text {
+  color: #d4a574;
+}
+
+.retro-text-secondary {
+  color: #e8dcc8;
+}
+
+/* Retro box styling */
+.retro-box {
+  background: rgba(0, 0, 0, 0.9);
+  border: 2px solid #6b9080;
+  border-radius: 0;
+}
+
+/* Retro button */
+.retro-button {
+  background: rgba(0, 0, 0, 0.8);
+  border: 2px solid #6b9080;
+  border-radius: 0;
+  color: #d4a574;
+  transition: all 0.2s;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.retro-button:hover:not(:disabled) {
+  background: rgba(212, 165, 116, 0.2);
+  transform: translateY(-1px);
+}
+
+.retro-button:disabled {
+  border-color: #666666;
+  color: #666666;
+  cursor: not-allowed;
+}
+
+/* Active/Selected button */
+.retro-button-active {
+  background: rgba(212, 165, 116, 0.3);
+  border-color: #6b9080;
+  color: #d4a574;
+}
+
+/* Scanline effect overlay */
+.scanlines {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(107, 144, 128, 0.03) 2px,
+    rgba(107, 144, 128, 0.03) 4px
+  );
+  pointer-events: none !important;
+}
+
+/* Input fields */
+.retro-input {
+  background: rgba(0, 0, 0, 0.7);
+  border: 2px solid #6b89a8;
+  border-radius: 0;
+  color: #e8dcc8;
+}
+
+.retro-input:focus {
+  outline: none;
+  border-color: #6b9080;
+}
+
+.retro-input::placeholder {
+  color: #999999;
+}
+
+/* Card/Panel styling */
+.retro-card {
+  background: rgba(0, 0, 0, 0.85);
+  border: 2px solid #6b89a8;
+  border-radius: 0;
+}
+
+.retro-card:hover {
+  border-color: #6b9080;
+}
+
+/* Stats display */
+.retro-stat {
+  font-family: 'Courier New', monospace;
+  color: #d4a574;
+  letter-spacing: 0.1em;
+}
+
+/* Glow animation - disabled */
+/* @keyframes glow {
+  0%, 100% {
+    text-shadow: 0 0 10px rgba(251, 191, 36, 0.8), 0 0 20px rgba(251, 191, 36, 0.4);
+  }
+  50% {
+    text-shadow: 0 0 20px rgba(251, 191, 36, 1), 0 0 30px rgba(251, 191, 36, 0.6);
+  }
+}
+
+.glow-pulse {
+  animation: glow 2s ease-in-out infinite;
+} */
+
+/* CRT flicker effect (subtle) */
+@keyframes flicker {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.97; }
+}
+
+.crt-flicker {
+  animation: flicker 0.15s infinite;
+}

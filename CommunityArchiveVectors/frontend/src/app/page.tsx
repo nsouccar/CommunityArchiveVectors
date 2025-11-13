@@ -1,49 +1,118 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { lugrasimo } from './fonts'
 import * as d3 from 'd3'
-
-interface SearchResult {
-  tweet_id: number
-  full_text: string
-  username: string
-  created_at?: string
-  similarity: number
-  retweet_count?: number
-  favorite_count?: number
-  reply_to_tweet_id?: number
-  parent_tweet_text?: string
-  parent_tweet_username?: string
-}
-
-interface SearchResponse {
-  query: string
-  results: SearchResult[]
-  search_time_ms: number
-  database_size: number
-}
+import TutorialModal from '@/components/TutorialModal'
+import './retro.css'
 
 export default function Home() {
+  const searchParams = useSearchParams()
+  const returnYearParam = searchParams.get('year')
+
   const svgRef = useRef<SVGSVGElement>(null)
   const [currentYear, setCurrentYear] = useState(0)
+  const [initialYearSet, setInitialYearSet] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [networkData, setNetworkData] = useState<any>(null)
   const [communityTopics, setCommunityTopics] = useState<any>(null)
+  const [allTopics, setAllTopics] = useState<any>(null)
+  const [loadedYears, setLoadedYears] = useState<Set<string>>(new Set())
+  const [communityNames, setCommunityNames] = useState<any>(null)
   const [stats, setStats] = useState({ year: '2012', users: 0, interactions: 0, communities: 0 })
   const [searchUsername, setSearchUsername] = useState('')
   const [selectedUser, setSelectedUser] = useState<string | null>(null)
+  const [selectedCommunity, setSelectedCommunity] = useState<number | null>(null)
+  const [selectedTopic, setSelectedTopic] = useState<any>(null)
+  const [topicTweets, setTopicTweets] = useState<any[]>([])
+  const [loadingTweets, setLoadingTweets] = useState(false)
   const [userConnections, setUserConnections] = useState<Set<string>>(new Set())
+  const [showCommunitySidebar, setShowCommunitySidebar] = useState(true)
+  const [hoveredCommunity, setHoveredCommunity] = useState<number | null>(null)
+  const [viewMode, setViewMode] = useState<'independent' | 'lineage'>('independent')
+  const [temporalAlignments, setTemporalAlignments] = useState<any>(null)
+  const [lineageNames, setLineageNames] = useState<Record<number, string>>({})
+  const [inactiveLineageMessage, setInactiveLineageMessage] = useState<string | null>(null)
+  const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({})
   const simulationRef = useRef<any>(null)
+  const zoomToCommunityRef = useRef<((communityId: number) => void) | null>(null)
+  const resetZoomRef = useRef<(() => void) | null>(null)
 
-  // Search overlay state
-  const [showSearch, setShowSearch] = useState(false)
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResult[]>([])
-  const [loading, setLoading] = useState(false)
-  const [searchTime, setSearchTime] = useState<number | null>(null)
-  const [databaseSize, setDatabaseSize] = useState<number | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Tutorial modal state
+  const [showTutorial, setShowTutorial] = useState(false)
+
+  // Auto-open tutorial on first visit
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const hasSeenTutorial = localStorage.getItem('hasSeenTutorial')
+      if (!hasSeenTutorial) {
+        setShowTutorial(true)
+        localStorage.setItem('hasSeenTutorial', 'true')
+      }
+    }
+  }, [])
+
+  const fetchTopicTweets = async (tweetIds: string[], sampleTweets?: any[]) => {
+    setLoadingTweets(true)
+    console.log('fetchTopicTweets called with:', { tweetIds: tweetIds.length, sampleTweets: sampleTweets?.length })
+    console.log('Sample tweet data:', sampleTweets?.[0])
+
+    // Use sample tweets if provided (2024 approach)
+    if (sampleTweets && sampleTweets.length > 0) {
+      console.log('Using sample tweets:', sampleTweets)
+      setTopicTweets(sampleTweets)
+      setLoadingTweets(false)
+      return
+    }
+
+    // Otherwise, fetch from API (old approach for other years)
+    console.log('Fetching tweets from API for IDs:', tweetIds.slice(0, 50))
+    try {
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tweetIds: tweetIds.slice(0, 50) })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch tweets')
+      }
+
+      const data = await response.json()
+      console.log('Fetched tweets from API:', data.tweets?.length)
+      setTopicTweets(data.tweets || [])
+    } catch (error) {
+      console.error('Error fetching tweets:', error)
+      setTopicTweets([])
+    }
+
+    setLoadingTweets(false)
+  }
+
+  // Lazy load topics for a specific year
+  const loadYearTopics = async (year: string) => {
+    if (loadedYears.has(year)) {
+      console.log(`Topics for year ${year} already loaded`)
+      return
+    }
+
+    console.log(`Loading topics for year ${year}...`)
+    try {
+      const response = await fetch(`/data/topics_year_${year}_summary.json`)
+      const yearData = await response.json()
+
+      setAllTopics((prev: any) => ({
+        ...prev,
+        [year]: yearData
+      }))
+
+      setLoadedYears((prev) => new Set(Array.from(prev).concat(year)))
+      console.log(`✓ Loaded topics for year ${year}`)
+    } catch (err) {
+      console.warn(`Failed to load topics for year ${year}:`, err)
+    }
+  }
 
   useEffect(() => {
     // Load network data
@@ -58,7 +127,7 @@ export default function Home() {
       })
       .catch(err => console.error('Error loading network data:', err))
 
-    // Load community topics
+    // Load community topics (old format - keywords)
     fetch('/community_topics.json')
       .then(res => res.json())
       .then(data => {
@@ -66,7 +135,44 @@ export default function Home() {
         setCommunityTopics(data)
       })
       .catch(err => console.error('Error loading community topics:', err))
+
+    // Initialize allTopics as empty object - will be populated on-demand
+    setAllTopics({})
+
+    // Load community names
+    fetch('/data/all_community_names.json')
+      .then(res => res.json())
+      .then(data => {
+        console.log('Loaded community names:', data)
+        setCommunityNames(data)
+      })
+      .catch(err => console.error('Error loading community names:', err))
+
+    // Load avatar URLs
+    fetch('/avatar_urls.json')
+      .then(res => res.json())
+      .then(data => {
+        console.log('Loaded avatar URLs:', Object.keys(data).length)
+        setAvatarUrls(data)
+      })
+      .catch(err => console.error('Error loading avatar URLs:', err))
+
+    // Load temporal alignments
+    fetch('/community_temporal_alignments.json')
+      .then(res => res.json())
+      .then(data => {
+        console.log('Loaded temporal alignments:', data)
+        setTemporalAlignments(data)
+      })
+      .catch(err => console.error('Error loading temporal alignments:', err))
   }, [])
+
+  // Lazy load topics when year changes
+  useEffect(() => {
+    if (stats.year && allTopics !== null) {
+      loadYearTopics(stats.year)
+    }
+  }, [stats.year, allTopics])
 
   useEffect(() => {
     let interval: NodeJS.Timeout
@@ -81,10 +187,22 @@ export default function Home() {
           updateVisualization(next, networkData)
           return next
         })
-      }, 2000)
+      }, 2000) // Change year every 2 seconds
     }
     return () => clearInterval(interval)
   }, [isPlaying, networkData])
+
+  // Set initial year from URL parameter if present
+  useEffect(() => {
+    if (returnYearParam && networkData && !initialYearSet) {
+      const yearIndex = networkData.years.findIndex((y: any) => y.year === returnYearParam)
+      if (yearIndex !== -1) {
+        setCurrentYear(yearIndex)
+        updateVisualization(yearIndex, networkData)
+        setInitialYearSet(true)
+      }
+    }
+  }, [returnYearParam, networkData, initialYearSet])
 
   // Update connections when selectedUser changes
   useEffect(() => {
@@ -96,6 +214,7 @@ export default function Home() {
     const yearData = networkData.years[currentYear]
     const connections = new Set<string>()
 
+    // Find all nodes connected to the selected user
     yearData.edges.forEach((edge: any) => {
       if (edge.source === selectedUser || (edge.source.id && edge.source.id === selectedUser)) {
         const targetId = edge.target.id || edge.target
@@ -109,51 +228,246 @@ export default function Home() {
 
     setUserConnections(connections)
 
+    // Re-render the visualization to update highlighting
     if (networkData) {
       updateVisualization(currentYear, networkData)
     }
   }, [selectedUser, currentYear, networkData])
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // Zoom to community when hovered or selected
+  useEffect(() => {
+    if (hoveredCommunity !== null && zoomToCommunityRef.current) {
+      zoomToCommunityRef.current(hoveredCommunity)
+    } else if (selectedCommunity !== null && zoomToCommunityRef.current) {
+      zoomToCommunityRef.current(selectedCommunity)
+    } else if (hoveredCommunity === null && selectedCommunity === null && resetZoomRef.current) {
+      resetZoomRef.current()
+    }
+  }, [hoveredCommunity, selectedCommunity])
 
-    if (!query.trim()) return
+  // Re-render when view mode changes and build lineage names
+  useEffect(() => {
+    if (viewMode === 'lineage' && temporalAlignments && communityNames) {
+      // Build lineage ID mapping
+      const lineageMapping = buildLineageMapping()
+      if (lineageMapping) {
+        // Build lineage names: map each lineage ID to the name from its earliest year
+        const lineageToName: Record<number, string> = {}
+        const lineageToEarliestYear: Record<number, number> = {}
 
-    setLoading(true)
-    setError(null)
+        // Find earliest year for each lineage
+        Object.entries(lineageMapping).forEach(([key, lineageId]) => {
+          const [yearStr, commStr] = key.split('_')
+          const year = parseInt(yearStr)
+          const commId = parseInt(commStr)
 
-    try {
-      const response = await fetch(
-        `/api/search?query=${encodeURIComponent(query)}&limit=20`
-      )
+          if (!lineageToEarliestYear[lineageId] || year < lineageToEarliestYear[lineageId]) {
+            lineageToEarliestYear[lineageId] = year
 
-      if (!response.ok) {
-        throw new Error(`Search failed: ${response.statusText}`)
+            // Get community name from this year
+            const yearNames = communityNames?.[year]?.communities
+            const communityInfo = yearNames?.find((c: any) => c.community_id === commId)
+            if (communityInfo?.name) {
+              lineageToName[lineageId] = communityInfo.name
+            }
+          }
+        })
+
+        console.log('📝 Built lineage names:', Object.keys(lineageToName).length, 'lineages named')
+        setLineageNames(lineageToName)
+      }
+    }
+
+    if (networkData) {
+      updateVisualization(currentYear, networkData)
+    }
+  }, [viewMode, temporalAlignments, communityNames])
+
+  // Update node highlighting when community hover/selection changes
+  useEffect(() => {
+    if (!svgRef.current) return
+
+    const svg = d3.select(svgRef.current)
+    const nodeGroups = svg.selectAll('.node-group')
+
+    // Get the color scale (must match the one used in renderNetwork)
+    const colorScale = d3.scaleOrdinal(d3.schemeTableau10)
+      .domain(d3.range(0, 20).map(String))
+
+    const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+
+    // Cancel any existing blinking animations
+    nodeGroups.interrupt()
+
+    // Update images
+    nodeGroups.selectAll('image')
+      .transition()
+      .duration(200)
+      .attr('opacity', function (d: any) {
+        // Preserve user selection dimming
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.2
+        }
+
+        // Dim nodes not in the hovered/selected community
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.15
+        }
+
+        return 1
+      })
+
+    // Update border circles
+    nodeGroups.selectAll('circle')
+      .transition()
+      .duration(200)
+      .attr('stroke', function (d: any) {
+        // Preserve user selection highlighting
+        if (selectedUser && d.id === selectedUser) return '#00ff00'
+        if (selectedUser && userConnections.has(d.id)) return '#00d4ff'
+
+        // Use community color
+        return colorScale(String(d.community))
+      })
+      .attr('opacity', function (d: any) {
+        // Preserve user selection dimming
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.4
+        }
+
+        // Dim nodes not in the hovered/selected community
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.3
+        }
+
+        return 1
+      })
+      .attr('r', function (d: any) {
+        // Preserve user selection sizing
+        if (selectedUser) {
+          if (d.id === selectedUser) return Math.max(8, Math.min(d.degree, 20))
+          if (userConnections.has(d.id)) return Math.max(6, Math.min(d.degree, 17))
+        }
+
+        // Make highlighted community nodes bigger
+        if (highlightCommunity !== null && d.community === highlightCommunity) {
+          return Math.max(8, Math.min(d.degree * 1.8, 25))
+        }
+
+        return Math.max(4, Math.min(d.degree, 15))
+      })
+      .attr('stroke-width', function (d: any) {
+        // Preserve user selection stroke
+        if (selectedUser && d.id === selectedUser) return 3
+        if (selectedUser && userConnections.has(d.id)) return 2
+
+        // Thicker stroke for highlighted community
+        if (highlightCommunity !== null && d.community === highlightCommunity) {
+          return 3
+        }
+
+        return 2
+      })
+
+    // Add blinking animation for highlighted community
+    if (highlightCommunity !== null) {
+      const highlightedImages = nodeGroups
+        .filter((d: any) => d.community === highlightCommunity)
+        .selectAll('image')
+
+      const blink = () => {
+        highlightedImages
+          .transition()
+          .duration(800)
+          .attr('opacity', 0.6)
+          .transition()
+          .duration(800)
+          .attr('opacity', 1)
+          .on('end', function (d: any) {
+            // Continue blinking if still highlighted
+            if ((hoveredCommunity !== null && d.community === hoveredCommunity) ||
+              (selectedCommunity !== null && d.community === selectedCommunity)) {
+              d3.select(this).call(blink as any)
+            }
+          })
       }
 
-      const data: SearchResponse = await response.json()
-      setResults(data.results)
-      setSearchTime(data.search_time_ms)
-      setDatabaseSize(data.database_size)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Search failed')
-      setResults([])
-    } finally {
-      setLoading(false)
+      blink()
     }
+  }, [hoveredCommunity, selectedCommunity, selectedUser, userConnections])
+
+  // Helper function to build lineage mapping from temporal alignments
+  const buildLineageMapping = () => {
+    if (!temporalAlignments || !temporalAlignments.alignments) {
+      console.log('⚠️ Cannot build lineage mapping:', {
+        temporalAlignments: temporalAlignments ? 'exists' : 'null',
+        alignments: temporalAlignments?.alignments ? `${temporalAlignments.alignments.length} alignments` : 'null'
+      })
+      return null
+    }
+
+    console.log('✅ Building lineage mapping from', temporalAlignments.alignments.length, 'alignments')
+
+    const mapping: Record<string, number> = {} // key: "year_comm" -> lineage ID
+    let lineageCounter = 0
+
+    // Build a graph of connections
+    const connections: Record<string, string[]> = {}
+    temporalAlignments.alignments.forEach((alignment: any) => {
+      const key1 = `${alignment.year1}_${alignment.community1_id}`
+      const key2 = `${alignment.year2}_${alignment.community2_id}`
+      if (!connections[key1]) connections[key1] = []
+      connections[key1].push(key2)
+    })
+
+    console.log('📊 Built connection graph with', Object.keys(connections).length, 'nodes')
+
+    // Assign lineage IDs using DFS
+    const visited = new Set<string>()
+    const assignLineage = (key: string, lineageId: number) => {
+      if (visited.has(key)) return
+      visited.add(key)
+      mapping[key] = lineageId
+
+      // Follow connections
+      if (connections[key]) {
+        connections[key].forEach(nextKey => {
+          assignLineage(nextKey, lineageId)
+        })
+      }
+    }
+
+    // Process all alignments
+    Object.keys(connections).forEach(key => {
+      if (!visited.has(key)) {
+        assignLineage(key, lineageCounter++)
+      }
+    })
+
+    console.log('✨ Created', lineageCounter, 'lineages from', Object.keys(mapping).length, 'community-year pairs')
+    console.log('Sample lineage mappings:', Object.entries(mapping).slice(0, 5))
+
+    return mapping
   }
 
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return 'Unknown date'
-    try {
-      return new Date(dateString).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      })
-    } catch {
-      return 'Unknown date'
+  // Helper function to get community name based on view mode
+  const getCommunityName = (year: number, communityId: number): string => {
+    if (viewMode === 'lineage' && temporalAlignments) {
+      // In lineage mode, use simple numeric labels
+      const lineageMapping = buildLineageMapping()
+      if (lineageMapping) {
+        const key = `${year}_${communityId}`
+        const lineageId = lineageMapping[key]
+        if (lineageId !== undefined) {
+          return `Lineage ${lineageId}`
+        }
+      }
     }
+
+    // Independent mode: return the community's topic-based name
+    const yearNames = communityNames?.[year]?.communities
+    const communityInfo = yearNames?.find((c: any) => c.community_id === communityId)
+    return communityInfo?.name || `Community ${communityId}`
   }
 
   const updateVisualization = (yearIndex: number, data: any) => {
@@ -173,17 +487,21 @@ export default function Home() {
   const renderNetwork = (yearData: any) => {
     if (!svgRef.current) return
 
+    // Use full window dimensions for spacey full-screen effect
     const width = window.innerWidth
     const height = window.innerHeight
 
+    // Clear previous visualization
     d3.select(svgRef.current).selectAll('*').remove()
 
     const svg = d3.select(svgRef.current)
       .attr('width', width)
       .attr('height', height)
+    // Transparent background to show stars.png
 
     const g = svg.append('g')
 
+    // Add zoom behavior
     const zoom = d3.zoom()
       .scaleExtent([0.1, 10])
       .on('zoom', (event) => {
@@ -192,12 +510,93 @@ export default function Home() {
 
     svg.call(zoom as any)
 
+    // Function to zoom to a specific community
+    const zoomToCommunity = (communityId: number, duration: number = 750) => {
+      const communityNodes = yearData.nodes.filter((n: any) => n.community === communityId)
+      if (communityNodes.length === 0) return
+
+      // Check if nodes have valid coordinates (simulation has positioned them)
+      const hasValidCoords = communityNodes.every((n: any) =>
+        typeof n.x === 'number' && !isNaN(n.x) &&
+        typeof n.y === 'number' && !isNaN(n.y)
+      )
+      if (!hasValidCoords) return
+
+      // Calculate bounding box
+      const xs = communityNodes.map((n: any) => n.x)
+      const ys = communityNodes.map((n: any) => n.y)
+      const minX = Math.min(...xs)
+      const maxX = Math.max(...xs)
+      const minY = Math.min(...ys)
+      const maxY = Math.max(...ys)
+
+      // Add padding
+      const padding = 100
+      const boxWidth = maxX - minX + padding * 2
+      const boxHeight = maxY - minY + padding * 2
+
+      // Calculate scale and translation
+      const scale = Math.min(8, 0.9 / Math.max(boxWidth / width, boxHeight / height))
+      const centerX = (minX + maxX) / 2
+      const centerY = (minY + maxY) / 2
+      const translateX = width / 2 - scale * centerX
+      const translateY = height / 2 - scale * centerY
+
+      // Animate zoom
+      svg.transition()
+        .duration(duration)
+        .call(
+          zoom.transform as any,
+          d3.zoomIdentity.translate(translateX, translateY).scale(scale)
+        )
+    }
+
+    // Function to reset zoom
+    const resetZoom = (duration: number = 750) => {
+      svg.transition()
+        .duration(duration)
+        .call(
+          zoom.transform as any,
+          d3.zoomIdentity
+        )
+    }
+
+    // Store zoom functions in refs so they can be called from event handlers
+    zoomToCommunityRef.current = zoomToCommunity
+    resetZoomRef.current = resetZoom
+
+    // Color scale (same for both modes now - only names change)
     const colorScale = d3.scaleOrdinal(d3.schemeTableau10)
       .domain(d3.range(0, 20).map(String))
 
-    const nodes = yearData.nodes.map((d: any) => ({ ...d }))
-    const links = yearData.edges.map((d: any) => ({ ...d }))
+    // Prepare data - limit nodes for large graphs to prevent crashes
+    const MAX_NODES = 1500  // Render max 1500 nodes for performance
+    let nodes = yearData.nodes.map((d: any) => ({ ...d }))
+    let links = yearData.edges.map((d: any) => ({ ...d }))
 
+    // If graph is too large, filter to most connected nodes
+    if (nodes.length > MAX_NODES) {
+      console.log(`Large graph detected (${nodes.length} nodes). Limiting to top ${MAX_NODES} most connected nodes...`)
+
+      // Sort by degree (connection count) and take top N
+      const topNodes = nodes
+        .sort((a: any, b: any) => (b.degree || 0) - (a.degree || 0))
+        .slice(0, MAX_NODES)
+
+      const topNodeIds = new Set(topNodes.map((n: any) => n.id))
+
+      // Filter links to only include those between top nodes
+      links = links.filter((l: any) => {
+        const sourceId = l.source.id || l.source
+        const targetId = l.target.id || l.target
+        return topNodeIds.has(sourceId) && topNodeIds.has(targetId)
+      })
+
+      nodes = topNodes
+      console.log(`Reduced to ${nodes.length} nodes and ${links.length} edges`)
+    }
+
+    // Create force simulation
     const simulation = d3.forceSimulation(nodes)
       .force('link', d3.forceLink(links).id((d: any) => d.id).distance(50))
       .force('charge', d3.forceManyBody().strength(-100))
@@ -206,28 +605,30 @@ export default function Home() {
 
     simulationRef.current = simulation
 
+    // Create links
     const link = g.append('g')
       .selectAll('line')
       .data(links)
       .join('line')
       .attr('stroke', (d: any) => {
+        // Highlight connections to the selected user
         if (selectedUser) {
           const sourceId = d.source.id || d.source
           const targetId = d.target.id || d.target
           if (sourceId === selectedUser || targetId === selectedUser) {
-            return '#00d4ff'
+            return '#00d4ff' // Cyan for connections to selected user
           }
         }
-        return '#4a5568'
+        return '#4a5568' // Default gray
       })
       .attr('stroke-opacity', (d: any) => {
         if (selectedUser) {
           const sourceId = d.source.id || d.source
           const targetId = d.target.id || d.target
           if (sourceId === selectedUser || targetId === selectedUser) {
-            return 0.8
+            return 0.8 // More visible for selected connections
           }
-          return 0.1
+          return 0.1 // Dim other connections
         }
         return d.weight > 5 ? 0.6 : 0.3
       })
@@ -236,46 +637,41 @@ export default function Home() {
           const sourceId = d.source.id || d.source
           const targetId = d.target.id || d.target
           if (sourceId === selectedUser || targetId === selectedUser) {
-            return Math.min(d.weight / 2, 6)
+            return Math.min(d.weight / 2, 6) // Thicker for selected connections
           }
         }
         return Math.min(d.weight / 2, 4)
       })
 
-    const node = g.append('g')
-      .selectAll('circle')
+    // Create circular clip paths for profile images
+    const defs = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs')
+
+    // Add a circular clipPath for each unique user
+    nodes.forEach((d: any) => {
+      if (!defs.select(`#clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')}`).empty()) return
+
+      defs.append('clipPath')
+        .attr('id', `clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')}`)
+        .append('circle')
+        .attr('cx', 0)
+        .attr('cy', 0)
+        .attr('r', (selectedUser && d.id === selectedUser) ? Math.max(8, Math.min(d.degree, 20)) : Math.max(4, Math.min(d.degree, 15)))
+    })
+
+    // Create node groups (image + border circle)
+    const nodeGroup = g.append('g')
+      .attr('class', 'nodes')
+      .selectAll('g')
       .data(nodes)
-      .join('circle')
-      .attr('r', (d: any) => {
-        if (selectedUser) {
-          if (d.id === selectedUser) return Math.max(8, Math.min(d.degree, 20))
-          if (userConnections.has(d.id)) return Math.max(6, Math.min(d.degree, 17))
-        }
-        return Math.max(4, Math.min(d.degree, 15))
-      })
-      .attr('fill', (d: any) => {
-        if (selectedUser && d.id === selectedUser) return '#00d4ff'
-        if (selectedUser && userConnections.has(d.id)) return '#4dd0e1'
-        return colorScale(String(d.community))
-      })
-      .attr('stroke', (d: any) => {
-        if (selectedUser && d.id === selectedUser) return '#00ff00'
-        if (selectedUser && userConnections.has(d.id)) return '#00d4ff'
-        return '#fff'
-      })
-      .attr('stroke-width', (d: any) => {
-        if (selectedUser && d.id === selectedUser) return 3
-        if (selectedUser && userConnections.has(d.id)) return 2
-        return 1.5
-      })
-      .attr('opacity', (d: any) => {
-        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
-          return 0.2
-        }
-        return 1
-      })
+      .join('g')
+      .attr('class', 'node-group')
       .style('cursor', 'pointer')
-      .on('mouseover', function(event, d: any) {
+      .on('click', function (event, d: any) {
+        const currentYearString = yearData.year || '2012'
+        window.location.href = `/network/${d.id}?returnYear=${currentYearString}`
+      })
+      .on('mouseover', function (event, d: any) {
+        // Find all connected nodes
         const connectedNodes = new Set<string>()
         connectedNodes.add(d.id)
 
@@ -287,12 +683,13 @@ export default function Home() {
           if (targetId === d.id) connectedNodes.add(sourceId)
         })
 
+        // Highlight connected edges
         link
           .attr('stroke', (l: any) => {
             const sourceId = l.source.id || l.source
             const targetId = l.target.id || l.target
             if (sourceId === d.id || targetId === d.id) {
-              return '#00d4ff'
+              return '#00d4ff' // Bright cyan for connected edges
             }
             return '#4a5568'
           })
@@ -300,40 +697,49 @@ export default function Home() {
             const sourceId = l.source.id || l.source
             const targetId = l.target.id || l.target
             if (sourceId === d.id || targetId === d.id) {
-              return 1
+              return 1 // Full opacity for connected edges
             }
-            return 0.1
+            return 0.1 // Dim other edges
           })
           .attr('stroke-width', (l: any) => {
             const sourceId = l.source.id || l.source
             const targetId = l.target.id || l.target
             if (sourceId === d.id || targetId === d.id) {
-              return 3
+              return 3 // Thicker for connected edges
             }
             return Math.min(l.weight / 2, 4)
           })
 
-        node
+        // Highlight connected nodes - update both images and circles
+        nodeGroup.selectAll('image')
           .attr('opacity', (n: any) => {
             if (connectedNodes.has(n.id)) return 1
-            return 0.15
+            return 0.15 // Dim non-connected nodes
+          })
+
+        nodeGroup.selectAll('circle')
+          .attr('opacity', (n: any) => {
+            if (connectedNodes.has(n.id)) return 1
+            return 0.3
           })
           .attr('r', (n: any) => {
-            if (n.id === d.id) return Math.max(10, Math.min(n.degree, 20))
-            if (connectedNodes.has(n.id)) return Math.max(6, Math.min(n.degree, 17))
+            if (n.id === d.id) return Math.max(10, Math.min(n.degree, 20)) // Larger for hovered
+            if (connectedNodes.has(n.id)) return Math.max(6, Math.min(n.degree, 17)) // Medium for connected
             return Math.max(4, Math.min(n.degree, 15))
           })
           .attr('stroke', (n: any) => {
-            if (n.id === d.id) return '#00d4ff'
-            if (connectedNodes.has(n.id)) return '#4dd0e1'
-            return '#fff'
+            if (n.id === d.id) return '#00d4ff' // Cyan ring for hovered
+            if (connectedNodes.has(n.id)) return '#4dd0e1' // Light cyan for connected
+            // Use community color
+            return colorScale(String(n.community))
           })
           .attr('stroke-width', (n: any) => {
             if (n.id === d.id) return 4
             if (connectedNodes.has(n.id)) return 2.5
-            return 1.5
+            return 2
           })
 
+        // Show tooltip
         const tooltip = d3.select('body')
           .append('div')
           .attr('class', 'tooltip-network')
@@ -348,13 +754,14 @@ export default function Home() {
           .style('z-index', '1000')
           .html(`
             <strong>@${d.id}</strong><br/>
-            Community: ${d.community + 1}<br/>
+            Community: ${d.community}<br/>
             Connections: ${d.degree}
           `)
           .style('left', (event.pageX + 10) + 'px')
           .style('top', (event.pageY - 10) + 'px')
       })
-      .on('mouseout', function(event, d: any) {
+      .on('mouseout', function (event, d: any) {
+        // Reset edges to normal
         link
           .attr('stroke', (l: any) => {
             if (selectedUser) {
@@ -388,10 +795,27 @@ export default function Home() {
             return Math.min(l.weight / 2, 4)
           })
 
-        node
+        // Reset nodes - update both images and circles
+        nodeGroup.selectAll('image')
           .attr('opacity', (n: any) => {
             if (selectedUser && n.id !== selectedUser && !userConnections.has(n.id)) {
               return 0.2
+            }
+            const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+            if (highlightCommunity !== null && n.community !== highlightCommunity) {
+              return 0.2
+            }
+            return 1
+          })
+
+        nodeGroup.selectAll('circle')
+          .attr('opacity', (n: any) => {
+            if (selectedUser && n.id !== selectedUser && !userConnections.has(n.id)) {
+              return 0.4
+            }
+            const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+            if (highlightCommunity !== null && n.community !== highlightCommunity) {
+              return 0.3
             }
             return 1
           })
@@ -405,24 +829,126 @@ export default function Home() {
           .attr('stroke', (n: any) => {
             if (selectedUser && n.id === selectedUser) return '#00ff00'
             if (selectedUser && userConnections.has(n.id)) return '#00d4ff'
-            return '#fff'
+            return colorScale(String(n.community))
           })
           .attr('stroke-width', (n: any) => {
             if (selectedUser && n.id === selectedUser) return 3
             if (selectedUser && userConnections.has(n.id)) return 2
-            return 1.5
+            const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+            if (highlightCommunity !== null && n.community === highlightCommunity) {
+              return 3
+            }
+            return 2
           })
 
+        // Remove tooltip
         d3.selectAll('.tooltip-network').remove()
       })
-      .on('click', function(event, d: any) {
-        window.location.href = `/network/${d.id}`
+
+    // Add profile images from avatar URLs
+    nodeGroup.append('image')
+      .attr('xlink:href', (d: any) => avatarUrls[d.id] || '')
+      .attr('width', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return r * 2
+      })
+      .attr('height', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return r * 2
+      })
+      .attr('x', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return -r
+      })
+      .attr('y', (d: any) => {
+        const r = selectedUser && d.id === selectedUser
+          ? Math.max(8, Math.min(d.degree, 20))
+          : Math.max(4, Math.min(d.degree, 15))
+        return -r
+      })
+      .attr('clip-path', (d: any) => `url(#clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')})`)
+      .attr('opacity', (d: any) => {
+        // Dim nodes that are not selected or connected
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.2
+        }
+
+        // Dim nodes not in the hovered/selected community
+        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.2
+        }
+
+        return 1
+      })
+      .on('error', function (this: any) {
+        // Fallback to colored circle if image fails to load
+        d3.select(this.parentNode).append('circle')
+          .attr('r', 8)
+          .attr('fill', '#666')
+          .attr('stroke', '#fff')
+          .attr('stroke-width', 2)
+      })
+
+    // Add community-colored border circles
+    const node = nodeGroup.append('circle')
+      .attr('r', (d: any) => {
+        // Make selected user and their connections larger
+        if (selectedUser) {
+          if (d.id === selectedUser) return Math.max(8, Math.min(d.degree, 20))
+          if (userConnections.has(d.id)) return Math.max(6, Math.min(d.degree, 17))
+        }
+        return Math.max(4, Math.min(d.degree, 15))
+      })
+      .attr('fill', 'none')
+      .attr('stroke', (d: any) => {
+        // Highlight selected user in bright cyan
+        if (selectedUser && d.id === selectedUser) return '#00ff00' // Green ring for selected user
+        // Highlight connections in lighter cyan
+        if (selectedUser && userConnections.has(d.id)) return '#00d4ff' // Cyan ring for connections
+
+        // Use community color for border
+        const colorId = String(d.community)
+        return colorScale(colorId)
+      })
+      .attr('stroke-width', (d: any) => {
+        if (selectedUser && d.id === selectedUser) return 3
+        if (selectedUser && userConnections.has(d.id)) return 2
+
+        // Thicker border for highlighted community
+        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+        if (highlightCommunity !== null && d.community === highlightCommunity) {
+          return 3
+        }
+
+        return 2
+      })
+      .attr('opacity', (d: any) => {
+        // Dim nodes that are not selected or connected
+        if (selectedUser && d.id !== selectedUser && !userConnections.has(d.id)) {
+          return 0.4
+        }
+
+        // Dim nodes not in the hovered/selected community
+        const highlightCommunity = hoveredCommunity !== null ? hoveredCommunity : selectedCommunity
+        if (highlightCommunity !== null && d.community !== highlightCommunity) {
+          return 0.3
+        }
+
+        return 1
       })
       .call(d3.drag()
         .on('start', dragstarted)
         .on('drag', dragged)
         .on('end', dragended) as any)
 
+    // Update positions on tick
     simulation.on('tick', () => {
       link
         .attr('x1', (d: any) => d.source.x)
@@ -430,9 +956,8 @@ export default function Home() {
         .attr('x2', (d: any) => d.target.x)
         .attr('y2', (d: any) => d.target.y)
 
-      node
-        .attr('cx', (d: any) => d.x)
-        .attr('cy', (d: any) => d.y)
+      nodeGroup
+        .attr('transform', (d: any) => `translate(${d.x},${d.y})`)
     })
 
     function dragstarted(event: any) {
@@ -485,12 +1010,19 @@ export default function Home() {
   }
 
   return (
-    <div className="fixed inset-0 text-white overflow-hidden" style={{
+    <div className="fixed inset-0 text-[#e8dcc8] overflow-hidden" style={{
       backgroundImage: 'url(/stars.png)',
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
     }}>
+      {/* Tutorial Modal */}
+      <TutorialModal
+        isOpen={showTutorial}
+        onClose={() => setShowTutorial(false)}
+        onOpen={() => setShowTutorial(true)}
+      />
+
       {/* Full-screen SVG Canvas */}
       <div className="absolute inset-0">
         <svg ref={svgRef} className="w-full h-full" style={{ background: 'transparent' }}></svg>
@@ -498,7 +1030,7 @@ export default function Home() {
         {/* Loading State */}
         {!networkData && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-white text-xl">Loading constellation data...</div>
+            <div className="text-[#d4a574] text-xl">Loading constellation data...</div>
           </div>
         )}
       </div>
@@ -507,47 +1039,45 @@ export default function Home() {
 
       {/* Top-left: Title */}
       <div className="absolute top-6 left-6 z-20">
-        <h1 className={`text-4xl font-bold ${lugrasimo.className}`} style={{ color: '#ff0000' }}>
-          Constellation of People
+        <h1 className={`text-4xl font-bold ${lugrasimo.className}`} style={{
+          color: '#ff66ff'
+        }}>
+          CONSTELLATION OF PEOPLE
         </h1>
-        <p className="text-gray-400 text-sm mt-1 max-w-md">
-          How online communities formed and connected over time (2012-2025)
+        <p className="retro-text-secondary text-sm mt-1 max-w-md" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>
+          HOW ONLINE COMMUNITIES FORMED AND CONNECTED OVER TIME (2012-2025)
         </p>
       </div>
 
-      {/* Top-right: Stats & Search Button */}
+      {/* Top-right: Stats */}
       <div className="absolute top-6 right-6 z-20 flex gap-4 items-start">
-        <button
-          onClick={() => setShowSearch(true)}
-          className="bg-black/60 backdrop-blur-md border border-white/30 px-6 py-3 rounded-lg font-semibold hover:bg-black/80 transition-all"
-          style={{ boxShadow: '0 0 20px rgba(255,255,255,0.2)' }}
-        >
-          Search Through the Archive
-        </button>
         <div className="flex gap-4">
-          <div className="bg-black/60 backdrop-blur-md rounded-lg px-4 py-3 border border-white/30" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
-            <div className="text-2xl font-bold text-white">{stats.year}</div>
-            <div className="text-gray-400 text-xs uppercase tracking-wider">Year</div>
+          <div className="retro-box px-4 py-3 scanlines">
+            <div className="text-2xl font-bold retro-stat">{stats.year}</div>
+            <div className="retro-text-secondary text-xs uppercase tracking-wider">YEAR</div>
           </div>
-          <div className="bg-black/60 backdrop-blur-md rounded-lg px-4 py-3 border border-white/30" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
-            <div className="text-2xl font-bold text-white">{stats.users.toLocaleString()}</div>
-            <div className="text-gray-400 text-xs uppercase tracking-wider">Users</div>
+          <div className="retro-box px-4 py-3 scanlines">
+            <div className="text-2xl font-bold retro-stat">{stats.users.toLocaleString()}</div>
+            <div className="retro-text-secondary text-xs uppercase tracking-wider">USERS</div>
           </div>
-          <div className="bg-black/60 backdrop-blur-md rounded-lg px-4 py-3 border border-white/30" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
-            <div className="text-2xl font-bold text-white">{stats.interactions.toLocaleString()}</div>
-            <div className="text-gray-400 text-xs uppercase tracking-wider">Interactions</div>
+          <div className="retro-box px-4 py-3 scanlines">
+            <div className="text-2xl font-bold retro-stat">{stats.interactions.toLocaleString()}</div>
+            <div className="retro-text-secondary text-xs uppercase tracking-wider">INTERACTIONS</div>
           </div>
-          <div className="bg-black/60 backdrop-blur-md rounded-lg px-4 py-3 border border-white/30" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
-            <div className="text-2xl font-bold text-white">{stats.communities}</div>
-            <div className="text-gray-400 text-xs uppercase tracking-wider">Communities</div>
-          </div>
+          <button
+            onClick={() => setShowTutorial(true)}
+            className={`${lugrasimo.className} retro-button px-4 py-3 text-xs whitespace-nowrap`}
+            style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}
+          >
+            LEARN HOW THIS WORKS
+          </button>
         </div>
       </div>
 
       {/* Bottom-left: Username Search */}
       <div className="absolute bottom-6 left-6 z-20 max-w-md">
-        <div className="bg-black/60 backdrop-blur-md rounded-lg p-4 border border-white/30" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
-          <h3 className="text-sm font-bold text-white mb-3">Search User</h3>
+        <div className={`${lugrasimo.className} retro-box p-4`}>
+          <h3 className="retro-text-secondary text-sm font-bold mb-3" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>SEARCH USER</h3>
           <div className="flex gap-2">
             <input
               type="text"
@@ -558,8 +1088,8 @@ export default function Home() {
                   setSelectedUser(searchUsername.trim())
                 }
               }}
-              placeholder="Enter username..."
-              className="flex-1 px-3 py-2 bg-black/50 border border-white/30 rounded text-white placeholder-gray-500 focus:outline-none transition-colors text-sm"
+              placeholder="ENTER USERNAME..."
+              className="flex-1 px-3 py-2 retro-input text-sm"
             />
             <button
               onClick={() => {
@@ -568,9 +1098,9 @@ export default function Home() {
                 }
               }}
               disabled={!searchUsername.trim()}
-              className="px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
+              className="retro-button px-4 py-2 text-sm"
             >
-              Search
+              SEARCH
             </button>
             {selectedUser && (
               <button
@@ -579,19 +1109,19 @@ export default function Home() {
                   setSearchUsername('')
                   setUserConnections(new Set())
                 }}
-                className="px-4 py-2 bg-slate-600 hover:bg-slate-700 rounded font-semibold transition-all text-sm"
+                className="retro-button px-4 py-2 text-sm"
               >
-                Clear
+                CLEAR
               </button>
             )}
           </div>
           {selectedUser && (
-            <div className="mt-3 p-3 bg-black/50 rounded border border-white/30">
-              <p className="text-white text-sm">
-                Tracking: <span className="font-bold">@{selectedUser}</span>
+            <div className="mt-3 p-3 retro-card">
+              <p className="retro-text text-sm">
+                TRACKING: <span className="font-bold">@{selectedUser}</span>
                 {userConnections.size > 0 && (
-                  <span className="text-gray-400 ml-2">
-                    ({userConnections.size} connections)
+                  <span className="retro-text-secondary ml-2">
+                    ({userConnections.size} CONNECTIONS)
                   </span>
                 )}
               </p>
@@ -602,238 +1132,426 @@ export default function Home() {
 
       {/* Bottom-center: Controls */}
       <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-20">
-        <div className="bg-black/60 backdrop-blur-md rounded-lg p-3 border border-white/30 flex gap-3" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
+        <div className={`${lugrasimo.className} retro-box p-3 flex gap-3`}>
           <button
             onClick={handlePlay}
             disabled={!networkData}
-            className="px-5 py-2 bg-white hover:bg-gray-200 text-black disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
+            className={`retro-button px-5 py-2 text-sm ${isPlaying ? 'retro-button-active' : ''}`}
           >
-            {isPlaying ? 'Pause' : 'Play'}
+            {isPlaying ? '❚❚ PAUSE' : '▶ PLAY'}
           </button>
           <button
             onClick={handlePrev}
             disabled={!networkData || currentYear === 0}
-            className="px-5 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
+            className="retro-button px-5 py-2 text-sm"
           >
-            ← Prev
+            ← PREV
           </button>
           <button
             onClick={handleNext}
             disabled={!networkData || currentYear >= (networkData?.years.length || 0) - 1}
-            className="px-5 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
+            className="retro-button px-5 py-2 text-sm"
           >
-            Next →
+            NEXT →
           </button>
           <button
             onClick={handleReset}
             disabled={!networkData}
-            className="px-5 py-2 bg-slate-600 hover:bg-slate-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
+            className="retro-button px-5 py-2 text-sm"
           >
-            Reset
+            RESET
           </button>
         </div>
       </div>
 
-      {/* Bottom-right: Quick Guide */}
-      <div className="absolute bottom-6 right-6 z-20 max-w-xs">
-        <div className="bg-black/60 backdrop-blur-md rounded-lg p-4 border border-white/30" style={{ boxShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
-          <h3 className="text-sm font-bold text-white mb-2">Guide</h3>
-          <div className="text-xs text-gray-300 space-y-1">
-            <div><strong className="text-white">Drag:</strong> Move nodes</div>
-            <div><strong className="text-white">Scroll:</strong> Zoom</div>
-            <div><strong className="text-white">Hover:</strong> See details</div>
-            <div><strong className="text-white">Colors:</strong> Different communities</div>
+      {/* Left Sidebar: Community List */}
+      {showCommunitySidebar && networkData && allTopics && (
+        <div className="absolute top-32 left-6 z-20 w-64 max-h-[calc(100vh-350px)] overflow-y-auto border-b-2 border-[#6b9080]">
+          <div className={`${lugrasimo.className} bg-[#6b9080]/10 border-2 border-[#6b9080] rounded-none p-4`}>
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="retro-text-secondary text-sm font-bold" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>Communities ({stats.communities})</h3>
+              <button
+                onClick={() => setShowCommunitySidebar(false)}
+                className="text-gray-400 hover:text-[#d4a574] text-xs"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-2">
+              {(() => {
+                const yearData = networkData.years[currentYear]
+
+                if (viewMode === 'lineage' && temporalAlignments) {
+                  // In lineage mode, show ALL lineages
+                  const lineageMapping = buildLineageMapping()
+                  if (!lineageMapping) return null
+
+                  // Get all unique lineage IDs
+                  const allLineageIds = new Set<number>(Object.values(lineageMapping))
+
+                  // Get lineages that exist in the current year
+                  const activeLineages = new Set<number>()
+                  yearData.nodes.forEach((node: any) => {
+                    const key = `${stats.year}_${node.community}`
+                    const lineageId = lineageMapping[key]
+                    if (lineageId !== undefined) {
+                      activeLineages.add(lineageId)
+                    }
+                  })
+
+                  return Array.from(allLineageIds).sort((a, b) => a - b).map((lineageId: number) => {
+                    const isActive = activeLineages.has(lineageId)
+                    const lineageName = `Lineage ${lineageId}`
+
+                    return (
+                      <button
+                        key={lineageId}
+                        onClick={() => {
+                          if (isActive) {
+                            // Find a community ID from this lineage in the current year
+                            const communityEntry = Object.entries(lineageMapping).find(
+                              ([key, lid]) => lid === lineageId && key.startsWith(`${stats.year}_`)
+                            )
+                            if (communityEntry) {
+                              const commId = parseInt(communityEntry[0].split('_')[1])
+                              setSelectedCommunity(commId)
+                            }
+                          } else {
+                            setInactiveLineageMessage(`${lineageName} does not exist in ${stats.year}`)
+                            setTimeout(() => setInactiveLineageMessage(null), 3000)
+                          }
+                        }}
+                        onMouseEnter={() => {
+                          if (isActive) {
+                            const communityEntry = Object.entries(lineageMapping).find(
+                              ([key, lid]) => lid === lineageId && key.startsWith(`${stats.year}_`)
+                            )
+                            if (communityEntry) {
+                              const commId = parseInt(communityEntry[0].split('_')[1])
+                              setHoveredCommunity(commId)
+                            }
+                          }
+                        }}
+                        onMouseLeave={() => setHoveredCommunity(null)}
+                        className={`w-full text-left px-4 py-2 transition-colors text-xs rounded-none ${isActive
+                            ? selectedCommunity !== null && Object.entries(lineageMapping).some(
+                              ([key, lid]) => lid === lineageId && key.startsWith(`${stats.year}_`) && parseInt(key.split('_')[1]) === selectedCommunity
+                            )
+                              ? 'bg-[#d4a574]/30 border-2 border-[#6b9080]'
+                              : 'bg-[#6b9080]/10 border-2 border-[#6b9080] hover:bg-[#6b9080]/20'
+                            : 'bg-black/20 border-2 border-gray-600 cursor-not-allowed'
+                          }`}
+                      >
+                        <div className={`font-semibold ${isActive ? 'text-[#d4a574]' : 'text-gray-600'}`}>{lineageName}</div>
+                        {!isActive && (
+                          <div className="text-xs opacity-50">Inactive</div>
+                        )}
+                      </button>
+                    )
+                  })
+                } else {
+                  // Independent mode: show only current year's communities
+                  const communityIds = new Set<number>()
+                  yearData.nodes.forEach((node: any) => communityIds.add(node.community))
+                  const sortedCommunities = Array.from(communityIds).sort((a, b) => a - b)
+
+                  return sortedCommunities.map((communityId: number) => {
+                    const hasTopics = allTopics?.[stats.year]?.communities?.[String(communityId)]
+                    const displayTopics = hasTopics?.filter((t: any) => t.confidence === 'high') || []
+                    const topicCount = displayTopics.length
+                    const communityName = getCommunityName(parseInt(stats.year), communityId)
+
+                    return (
+                      <button
+                        key={communityId}
+                        onClick={() => setSelectedCommunity(communityId)}
+                        onMouseEnter={() => setHoveredCommunity(communityId)}
+                        onMouseLeave={() => setHoveredCommunity(null)}
+                        className={`w-full text-left px-4 py-2 transition-colors text-xs rounded-none ${selectedCommunity === communityId
+                            ? 'bg-[#d4a574]/30 border-2 border-[#6b9080]'
+                            : 'bg-[#6b9080]/10 border-2 border-[#6b9080] hover:bg-[#6b9080]/20'
+                          }`}
+                      >
+                        <div className="font-semibold text-[#d4a574]">{communityName}</div>
+                        {topicCount > 0 && (
+                          <div className="text-xs opacity-70">{topicCount} topics</div>
+                        )}
+                      </button>
+                    )
+                  })
+                }
+              })()}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Search Overlay Modal */}
-      {showSearch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-          {/* Backdrop */}
+      {/* Topics Modal Overlay */}
+      {selectedCommunity !== null && allTopics && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-30 flex items-center justify-center p-6"
+          onClick={() => setSelectedCommunity(null)}
+        >
           <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            onClick={() => setShowSearch(false)}
-          />
-
-          {/* Glass Modal */}
-          <div className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-white/10 backdrop-blur-xl border border-white/30 rounded-2xl shadow-2xl" style={{ boxShadow: '0 0 40px rgba(255,255,255,0.1), inset 0 0 40px rgba(255,255,255,0.05)' }}>
+            className={`${lugrasimo.className} bg-[#6b9080]/10 border-2 border-[#6b9080] rounded-none max-w-2xl w-full max-h-[80vh] flex flex-col`}
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Header */}
-            <div className="sticky top-0 bg-black/40 backdrop-blur-md border-b border-white/20 p-6 z-10">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">Search Through the Archive</h2>
+            <div className="p-6 border-b-2 border-[#6b9080] flex-shrink-0">
+              <div className="flex justify-between items-center">
+                <h2 className="text-2xl font-bold text-[#d4a574]">
+                  {getCommunityName(parseInt(stats.year), selectedCommunity)}
+                </h2>
                 <button
-                  onClick={() => setShowSearch(false)}
-                  className="text-white/70 hover:text-white text-3xl leading-none transition-colors"
+                  onClick={() => setSelectedCommunity(null)}
+                  className="text-gray-400 hover:text-[#d4a574] text-2xl"
                 >
-                  ×
+                  ✕
                 </button>
               </div>
-              <p className="text-gray-300 text-sm mb-4">
-                Semantic search over {databaseSize?.toLocaleString() || '6.4M'} tweets
-              </p>
-
-              {/* Search Form */}
-              <form onSubmit={handleSearch} className="relative">
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search for anything... (e.g., 'artificial intelligence', 'climate change')"
-                  className="w-full px-6 py-4 text-lg bg-black/30 border border-white/30 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-white/50"
-                  disabled={loading}
-                />
-                <button
-                  type="submit"
-                  disabled={loading || !query.trim()}
-                  className="absolute right-2 top-2 px-6 py-2 bg-purple-500 text-white font-semibold rounded-md hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                >
-                  {loading ? 'Searching...' : 'Search'}
-                </button>
-              </form>
+              <p className="retro-text-secondary text-sm mt-1" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>Year: {stats.year}</p>
             </div>
 
-            {/* Results */}
-            <div className="p-6">
-              {/* Search Stats */}
-              {searchTime !== null && !error && (
-                <div className="mb-4 text-sm text-gray-300">
-                  Found {results.length} results in {searchTime.toFixed(2)}ms
-                </div>
-              )}
+            {/* Topics List */}
+            <div className="overflow-y-auto flex-1 p-6">
+              {(() => {
+                const communityTopics = allTopics?.[stats.year]?.communities?.[String(selectedCommunity)]
+                const displayTopics = communityTopics?.filter((t: any) => t.confidence === 'high') || []
 
-              {/* Error Message */}
-              {error && (
-                <div className="mb-4 p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200">
-                  {error}
-                </div>
-              )}
+                if (displayTopics.length === 0) {
+                  return (
+                    <div className="text-center text-gray-400 py-8">
+                      No topics available for this community
+                    </div>
+                  )
+                }
 
-              {/* Results */}
-              <div className="space-y-4">
-                {results.map((result) => (
-                  <div
-                    key={result.tweet_id}
-                    className="bg-black/30 backdrop-blur-md border border-white/20 rounded-lg p-6 hover:bg-black/40 transition-all"
-                  >
-                    {/* Parent Tweet (if this is a reply) */}
-                    {result.parent_tweet_text && (
-                      <div className="mb-4 pl-4 border-l-2 border-white/30 bg-black/20 p-3 rounded">
-                        <div className="text-xs text-gray-400 mb-1">Replying to:</div>
-                        <div className="flex items-center space-x-2 mb-2">
-                          {result.parent_tweet_profile_image_url ? (
-                            <img
-                              src={result.parent_tweet_profile_image_url}
-                              alt={`@${result.parent_tweet_username || 'unknown'}`}
-                              className="w-6 h-6 rounded-full"
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                target.style.display = 'none';
-                                target.nextElementSibling?.classList.remove('hidden');
-                              }}
-                            />
-                          ) : null}
-                          <div className={`w-6 h-6 bg-gray-500 rounded-full ${result.parent_tweet_profile_image_url ? 'hidden' : ''} flex items-center justify-center text-white text-xs font-bold`}>
-                            {result.parent_tweet_username?.[0].toUpperCase() || '?'}
+                return (
+                  <div className="space-y-4">
+                    {displayTopics.map((topic: any, idx: number) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setSelectedTopic(topic)
+                          fetchTopicTweets(topic.tweet_ids?.slice(0, 50) || [], topic.sample_tweets)
+                        }}
+                        className="w-full text-left bg-[#6b9080]/10 border-2 border-[#6b89a8] rounded-none p-4 hover:bg-[#6b9080]/20 transition-colors cursor-pointer"
+                      >
+                        <h3 className="text-lg font-semibold text-[#d4a574] mb-2">{topic.topic}</h3>
+                        <p className="retro-text-secondary text-sm mb-3" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{topic.description}</p>
+                        <div className="flex gap-4 text-xs">
+                          <span className="retro-text-secondary" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>
+                            {topic.num_tweets?.toLocaleString()} tweets
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom-right: Quick Guide & Toggle */}
+      <div className={`${lugrasimo.className} absolute bottom-6 right-6 z-20 max-w-xs space-y-3`}>
+        <div className="bg-[#6b9080]/10 border-2 border-[#6b9080] rounded-none p-4">
+          <h3 className="retro-text-secondary text-sm font-bold mb-2" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>Guide</h3>
+          <div className="text-xs text-gray-300 space-y-1">
+            <div><strong className="text-[#d4a574]">Drag:</strong> Move nodes</div>
+            <div><strong className="text-[#d4a574]">Scroll:</strong> Zoom</div>
+            <div><strong className="text-[#d4a574]">Hover:</strong> See details</div>
+            <div><strong className="text-[#d4a574]">Click:</strong> View profile</div>
+            <div><strong className="text-[#d4a574]">Colors:</strong> {viewMode === 'independent' ? 'Communities within this year' : 'Lineages across multiple years'}</div>
+          </div>
+        </div>
+
+        {/* View Mode Toggle */}
+        <div className="bg-[#6b9080]/10 border-2 border-[#6b9080] rounded-none p-3">
+          <h3 className="retro-text-secondary text-sm font-bold mb-2" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>View Mode</h3>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setViewMode('independent')}
+              className={`flex-1 px-3 py-2 text-xs font-semibold transition-colors rounded-none ${viewMode === 'independent'
+                  ? 'bg-[#d4a574]/30 border-2 border-[#6b9080] text-[#d4a574]'
+                  : 'bg-[#6b9080]/10 border-2 border-[#6b9080] text-gray-300 hover:bg-[#6b9080]/20'
+                }`}
+            >
+              Independent
+            </button>
+            <button
+              onClick={() => setViewMode('lineage')}
+              className={`flex-1 px-3 py-2 text-xs font-semibold transition-colors rounded-none ${viewMode === 'lineage'
+                  ? 'bg-[#d4a574]/30 border-2 border-[#6b9080] text-[#d4a574]'
+                  : 'bg-[#6b9080]/10 border-2 border-[#6b9080] text-gray-300 hover:bg-[#6b9080]/20'
+                }`}
+            >
+              Lineage
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            {viewMode === 'independent'
+              ? 'Each year\'s communities are colored independently. The same color may represent different groups in different years.'
+              : 'Communities that persist across multiple years maintain the same color, making it easy to track their evolution over time.'}
+          </p>
+        </div>
+
+        {!showCommunitySidebar && (
+          <button
+            onClick={() => setShowCommunitySidebar(true)}
+            className="w-full px-4 py-2 bg-[#6b9080]/10 border-2 border-[#6b9080] rounded-none hover:bg-[#6b9080]/20 transition-colors text-sm text-[#d4a574]"
+          >
+            Show Communities
+          </button>
+        )}
+      </div>
+
+      {/* Tweet Viewer Modal */}
+      {selectedTopic && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40 flex items-center justify-center p-6"
+          onClick={() => {
+            setSelectedTopic(null)
+            setTopicTweets([])
+          }}
+        >
+          <div
+            className={`${lugrasimo.className} retro-box max-w-3xl w-full max-h-[85vh] flex flex-col`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 border-b-2 border-[#6b9080]/50 flex-shrink-0">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h2 className="text-2xl font-bold retro-text uppercase">{selectedTopic.topic}</h2>
+                  <p className="retro-text-secondary text-sm mt-1" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{selectedTopic.description}</p>
+                  <p className="retro-text-secondary text-xs mt-2" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{selectedTopic.num_tweets?.toLocaleString()} TWEETS TOTAL (SHOWING FIRST 50)</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setSelectedTopic(null)
+                    setTopicTweets([])
+                  }}
+                  className="retro-text hover:text-gray-300 text-2xl"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto flex-1 relative">
+              <div className="absolute inset-0 scanlines pointer-events-none" />
+              <div className="p-6 relative z-10">
+                {loadingTweets ? (
+                  <div className="text-center retro-text-secondary py-8" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>LOADING TWEETS...</div>
+                ) : topicTweets.length > 0 ? (
+                  <div className="space-y-4">
+                    {topicTweets.map((tweet: any, idx: number) => (
+                      <div
+                        key={idx}
+                        className="retro-card p-6 hover:border-[#6b9080] transition-all"
+                      >
+                        {/* Parent Tweet (if this is a reply) */}
+                        {tweet.parent_tweet && (
+                          <div className="mb-4 pb-4 border-b-2 border-gray-700/30">
+                            <div className="flex items-center space-x-2 mb-2">
+                              <span className="text-xs retro-text-secondary" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>└→ REPLYING TO:</span>
+                            </div>
+                            <div className="bg-black/40 p-4 border-2 border-gray-700/50">
+                              <div className="flex items-center space-x-2 mb-2">
+                                {tweet.parent_tweet.all_account?.username && (
+                                  <img
+                                    src={tweet.parent_tweet.all_account.profile_image_url || `https://unavatar.io/x/${tweet.parent_tweet.all_account.username}`}
+                                    alt={`@${tweet.parent_tweet.all_account?.username || 'unknown'}`}
+                                    className="w-8 h-8 rounded-full"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none';
+                                      const nextSibling = e.currentTarget.nextElementSibling as HTMLElement;
+                                      if (nextSibling) nextSibling.classList.remove('hidden');
+                                    }}
+                                  />
+                                )}
+                                <div className={`w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold ${tweet.parent_tweet.all_account?.username ? 'hidden' : ''}`}>
+                                  {tweet.parent_tweet.all_account?.username?.[0]?.toUpperCase() || '?'}
+                                </div>
+                                <div>
+                                  <div className="font-semibold retro-text text-sm" style={{ fontFamily: 'monospace' }}>
+                                    @{tweet.parent_tweet.all_account?.username || 'unknown'}
+                                  </div>
+                                  <div className="text-xs retro-text-secondary" style={{ fontFamily: 'monospace' }}>
+                                    {tweet.parent_tweet.created_at ? new Date(tweet.parent_tweet.created_at).toLocaleDateString('en-US', {
+                                      year: 'numeric',
+                                      month: 'short',
+                                      day: 'numeric',
+                                    }) : 'Unknown date'}
+                                  </div>
+                                </div>
+                              </div>
+                              <p className="text-[#e8dcc8] text-sm leading-relaxed" style={{ fontFamily: 'monospace' }}>
+                                {tweet.parent_tweet.full_text || 'Tweet text unavailable'}
+                              </p>
+                            </div>
                           </div>
-                          <div className="text-sm font-semibold text-gray-300">
-                            @{result.parent_tweet_username || 'unknown'}
+                        )}
+
+                        {/* Tweet Header */}
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center space-x-2">
+                            {(tweet.all_account?.username || tweet.username) && (
+                              <img
+                                src={tweet.all_account?.profile_image_url || `https://unavatar.io/x/${tweet.all_account?.username || tweet.username}`}
+                                alt={`@${tweet.all_account?.username || tweet.username || 'unknown'}`}
+                                className="w-10 h-10 rounded-full"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  const nextSibling = e.currentTarget.nextElementSibling as HTMLElement;
+                                  if (nextSibling) nextSibling.classList.remove('hidden');
+                                }}
+                              />
+                            )}
+                            <div className={`w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold ${(tweet.all_account?.username || tweet.username) ? 'hidden' : ''}`}>
+                              {(tweet.all_account?.username || tweet.username)?.[0]?.toUpperCase() || '?'}
+                            </div>
+                            <div>
+                              <div className="font-semibold retro-text" style={{ fontFamily: 'monospace' }}>
+                                @{tweet.all_account?.username || tweet.username || 'unknown'}
+                              </div>
+                              <div className="text-sm retro-text-secondary" style={{ fontFamily: 'monospace' }}>
+                                {(tweet.created_at || tweet.timestamp) ? new Date(tweet.created_at || tweet.timestamp).toLocaleDateString('en-US', {
+                                  year: 'numeric',
+                                  month: 'short',
+                                  day: 'numeric',
+                                }) : 'Unknown date'}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                        <p className="text-sm text-gray-400 italic">
-                          {result.parent_tweet_text}
+
+                        {/* Tweet Text */}
+                        <p className="text-[#e8dcc8] leading-relaxed mb-3" style={{ fontFamily: 'monospace' }}>
+                          {tweet.full_text || tweet.text || 'Tweet text unavailable'}
                         </p>
-                      </div>
-                    )}
 
-                    {/* Tweet Header */}
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center space-x-2">
-                        {result.profile_image_url ? (
-                          <img
-                            src={result.profile_image_url}
-                            alt={`@${result.username}`}
-                            className="w-10 h-10 rounded-full"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              target.style.display = 'none';
-                              target.nextElementSibling?.classList.remove('hidden');
-                            }}
-                          />
-                        ) : null}
-                        <div className={`w-10 h-10 bg-purple-500 rounded-full ${result.profile_image_url ? 'hidden' : ''} flex items-center justify-center text-white font-bold`}>
-                          {result.username[0].toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="font-semibold text-white">
-                            @{result.username}
+                        {/* Tweet Stats and Actions */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-4 text-sm retro-text-secondary" style={{ fontFamily: 'monospace' }}>
+                            <span>↻ {tweet.retweet_count?.toLocaleString() || 0}</span>
+                            <span>♥ {tweet.favorite_count?.toLocaleString() || 0}</span>
                           </div>
-                          <div className="text-sm text-gray-400">
-                            {formatDate(result.created_at)}
-                          </div>
+                          <a
+                            href={`https://x.com/${tweet.all_account?.username || tweet.username || 'twitter'}/status/${tweet.tweet_id || tweet.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="retro-button px-4 py-2 text-sm"
+                          >
+                            VIEW ON X
+                          </a>
                         </div>
                       </div>
-                      <div className="text-sm text-purple-300 font-semibold">
-                        {(result.similarity * 100).toFixed(1)}% match
-                      </div>
-                    </div>
-
-                    {/* Tweet Text */}
-                    <p className="text-white leading-relaxed mb-3">
-                      {result.full_text}
-                    </p>
-
-                    {/* Tweet Stats and Actions */}
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-4 text-sm text-gray-400">
-                        <span>🔄 {result.retweet_count?.toLocaleString() || 0} retweets</span>
-                        <span>❤️ {result.favorite_count?.toLocaleString() || 0} likes</span>
-                      </div>
-                      <a
-                        href={`https://x.com/${result.username}/status/${result.tweet_id}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors text-sm font-medium"
-                      >
-                        View on Twitter
-                      </a>
-                    </div>
+                    ))}
                   </div>
-                ))}
-
-                {/* Empty State */}
-                {!loading && results.length === 0 && !error && query && (
-                  <div className="text-center py-12 text-gray-400">
-                    No results found. Try a different search query.
-                  </div>
-                )}
-
-                {/* Initial State */}
-                {!loading && results.length === 0 && !error && !query && (
-                  <div className="text-center py-12 text-gray-300">
-                    <div className="text-xl font-semibold mb-2">Start searching</div>
-                    <div>Try searching for topics, people, or events</div>
-                    <div className="mt-4 space-x-2">
-                      <button
-                        onClick={() => setQuery('artificial intelligence')}
-                        className="px-4 py-2 bg-white/10 border border-white/20 rounded-md hover:bg-white/20 transition-colors"
-                      >
-                        artificial intelligence
-                      </button>
-                      <button
-                        onClick={() => setQuery('climate change')}
-                        className="px-4 py-2 bg-white/10 border border-white/20 rounded-md hover:bg-white/20 transition-colors"
-                      >
-                        climate change
-                      </button>
-                      <button
-                        onClick={() => setQuery('bitcoin')}
-                        className="px-4 py-2 bg-white/10 border border-white/20 rounded-md hover:bg-white/20 transition-colors"
-                      >
-                        bitcoin
-                      </button>
-                    </div>
-                  </div>
+                ) : (
+                  <div className="text-center retro-text-secondary py-8" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>NO TWEETS FOUND</div>
                 )}
               </div>
             </div>

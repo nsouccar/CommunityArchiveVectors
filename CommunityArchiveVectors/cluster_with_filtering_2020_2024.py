@@ -226,9 +226,9 @@ def cluster_and_filter_years():
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not found in environment")
 
-    # Test with 2020 first, then process remaining years
+    # Process years 2022-2024
     # IMPORTANT: Years are stored as strings in organized data
-    target_years = ['2022']
+    target_years = ['2022', '2023', '2024']
     all_years_stats = []
 
     for year in target_years:
