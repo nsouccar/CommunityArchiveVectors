@@ -26,21 +26,22 @@ app = modal.App("incremental-update-pipeline")
 volume = modal.Volume.from_name("tweet-vectors-large", create_if_missing=False)
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
-    "psycopg2-binary",
+    "supabase",
     "sentence-transformers",  # For embeddings
     "numpy",
     "scikit-learn",
     "anthropic",  # For LLM topic generation
 )
 
-secrets = modal.Secret.from_name("anthropic-api-key")
-
 @app.function(
     volumes={"/data": volume},
     image=image,
     timeout=7200,  # 2 hours
     memory=16384,  # 16GB
-    secrets=[secrets],
+    secrets=[
+        modal.Secret.from_name("anthropic-api-key"),
+        modal.Secret.from_name("supabase-secrets")
+    ],
 )
 def process_new_tweets():
     """
@@ -54,7 +55,7 @@ def process_new_tweets():
     5. Re-cluster affected communities
     6. Update topic files
     """
-    import psycopg2
+    from supabase import create_client, Client
     import numpy as np
     from sentence_transformers import SentenceTransformer
     import os
@@ -65,14 +66,10 @@ def process_new_tweets():
     print("=" * 80)
     print()
 
-    # Database config (use environment variables)
-    DB_CONFIG = {
-        "host": os.environ.get("SUPABASE_HOST", "YOUR_HOST.supabase.co"),
-        "database": "postgres",
-        "user": "postgres",
-        "password": os.environ.get("SUPABASE_PASSWORD", ""),
-        "port": 5432
-    }
+    # Initialize Supabase client
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://fabxmporizzqflnftavs.supabase.co")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     # Step 1: Load tracking file to find last processed tweet
     print("Step 1: Finding new tweets...")
@@ -113,36 +110,23 @@ def process_new_tweets():
 
     # Step 2: Query Supabase for new tweets
     print("Step 2: Querying Supabase for new tweets...")
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
 
-    cur.execute("""
-        SELECT
-            t.tweet_id,
-            t.full_text,
-            t.created_at,
-            t.account_id,
-            a.username
-        FROM tweets t
-        JOIN account a ON t.account_id = a.account_id
-        WHERE t.tweet_id > %s
-        AND t.full_text IS NOT NULL
-        ORDER BY t.tweet_id
-        LIMIT 10000
-    """, (last_tweet_id,))
+    # Query tweets with tweet_id > last_tweet_id
+    response = supabase.table('tweets').select(
+        'tweet_id, full_text, created_at, account_id, account(username)'
+    ).gt('tweet_id', last_tweet_id).not_.is_('full_text', 'null').order(
+        'tweet_id', desc=False
+    ).limit(10000).execute()
 
     new_tweets = []
-    for row in cur.fetchall():
+    for row in response.data:
         new_tweets.append({
-            'tweet_id': row[0],
-            'text': row[1],
-            'created_at': row[2].isoformat() if row[2] else None,
-            'account_id': row[3],
-            'username': row[4]
+            'tweet_id': row['tweet_id'],
+            'text': row['full_text'],
+            'created_at': row['created_at'],
+            'account_id': row['account_id'],
+            'username': row['account']['username'] if row.get('account') else 'unknown'
         })
-
-    cur.close()
-    conn.close()
 
     if not new_tweets:
         print("  No new tweets found!")
@@ -324,11 +308,140 @@ def process_new_tweets():
     print(f"  Found {len(updated_communities)} communities to re-cluster")
     print()
 
-    # Step 10: Re-cluster updated communities (simplified - just update counts)
-    print("Step 10: Updating community summaries...")
+    # Step 10: Update topic JSON files with new tweets
+    print("Step 10: Adding new tweets to existing topics...")
 
-    # For now, just update the summary stats
-    # Full re-clustering with LLM can be done separately as needed
+    if len(updated_communities) == 0:
+        print("  No communities to update")
+    else:
+        # Group by (year, community) since topics span all months
+        year_communities = {}
+        for year, month, community in updated_communities:
+            if year not in year_communities:
+                year_communities[year] = set()
+            year_communities[year].add(community)
+
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        topics_updated = 0
+
+        for year, communities in year_communities.items():
+            # Load the topic file for this year
+            topic_file = Path(f"/data/topics_year_{year}_summary.json")
+
+            if not topic_file.exists():
+                print(f"  ⚠️  No topic file for year {year} - skipping")
+                continue
+
+            with open(topic_file, 'r') as f:
+                topics_data = json.load(f)
+
+            for community in communities:
+                # Check if this community has topics
+                if community not in topics_data.get('communities', {}):
+                    print(f"  ⚠️  Community {community} not in year {year} topics - skipping")
+                    continue
+
+                # Collect ALL tweets and embeddings for this community across all months
+                all_comm_tweets = []
+                all_comm_embeddings = []
+
+                if year in organized:
+                    for month in organized[year]:
+                        if community in organized[year][month]:
+                            comm_data = organized[year][month][community]
+                            all_comm_tweets.extend(comm_data['tweets'])
+                            all_comm_embeddings.append(comm_data['embeddings'])
+
+                if not all_comm_embeddings:
+                    continue
+
+                # Combine embeddings from all months
+                all_comm_embeddings = np.vstack(all_comm_embeddings)
+
+                # Get existing topics for this community
+                comm_topics = topics_data['communities'][community]
+
+                # Build embedding lookup for faster access
+                tweet_id_to_embedding = {
+                    tweet['tweet_id']: all_comm_embeddings[i]
+                    for i, tweet in enumerate(all_comm_tweets)
+                }
+
+                # For each new tweet, find the best matching topic
+                for tweet in all_comm_tweets:
+                    if tweet['tweet_id'] <= last_tweet_id:
+                        continue  # Skip old tweets
+
+                    embedding = tweet_id_to_embedding[tweet['tweet_id']]
+
+                    # Find best matching topic by comparing to sample tweets
+                    best_topic_idx = 0
+                    best_similarity = -1
+
+                    for topic_idx, topic in enumerate(comm_topics):
+                        if 'sample_tweets' in topic and len(topic['sample_tweets']) > 0:
+                            # Get tweet IDs from this topic
+                            topic_tweet_ids = [t['tweet_id'] for t in topic['sample_tweets']]
+
+                            # Find their embeddings from the complete set
+                            topic_embeddings = []
+                            for tid in topic_tweet_ids:
+                                if tid in tweet_id_to_embedding:
+                                    topic_embeddings.append(tweet_id_to_embedding[tid])
+
+                            if topic_embeddings:
+                                # Compute average topic embedding
+                                topic_emb_avg = np.mean(topic_embeddings, axis=0)
+
+                                # Compute similarity
+                                sim = cosine_similarity(
+                                    embedding.reshape(1, -1),
+                                    topic_emb_avg.reshape(1, -1)
+                                )[0][0]
+
+                                if sim > best_similarity:
+                                    best_similarity = sim
+                                    best_topic_idx = topic_idx
+
+                    # Add tweet to best matching topic
+                    topic = comm_topics[best_topic_idx]
+
+                    # Add to tweet_ids if not already there
+                    if tweet['tweet_id'] not in topic.get('tweet_ids', []):
+                        if 'tweet_ids' not in topic:
+                            topic['tweet_ids'] = []
+                        topic['tweet_ids'].append(tweet['tweet_id'])
+                        topic['num_tweets'] = len(topic['tweet_ids'])
+
+                    # Add to sample_tweets (keep most recent 20)
+                    if 'sample_tweets' not in topic:
+                        topic['sample_tweets'] = []
+
+                    topic['sample_tweets'].append({
+                        'tweet_id': tweet['tweet_id'],
+                        'username': tweet.get('username', 'unknown'),
+                        'text': tweet.get('text', ''),
+                        'timestamp': tweet.get('timestamp', '')
+                    })
+
+                    # Keep only most recent 20 samples
+                    if len(topic['sample_tweets']) > 20:
+                        topic['sample_tweets'] = topic['sample_tweets'][-20:]
+
+                print(f"  ✓ Updated topics for {year}/community {community}")
+                topics_updated += 1
+
+            # Save updated topic file for this year
+            with open(topic_file, 'w') as f:
+                json.dump(topics_data, f, indent=2)
+
+        print(f"  Updated {topics_updated} communities across topic files")
+        volume.commit()
+
+    print()
+
+    # Summary stats
     summary = {
         'last_update': datetime.now().isoformat(),
         'total_tweets': sum(
@@ -374,7 +487,10 @@ def process_new_tweets():
     image=image,
     timeout=7200,
     memory=16384,
-    secrets=[secrets],
+    secrets=[
+        modal.Secret.from_name("anthropic-api-key"),
+        modal.Secret.from_name("supabase-secrets")
+    ],
 )
 def scheduled_update():
     """
