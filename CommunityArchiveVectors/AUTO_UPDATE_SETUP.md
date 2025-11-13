@@ -4,13 +4,13 @@ Get automatic daily updates for your tweet archive.
 
 ## One-Time Setup
 
-### 1. Set Database Credentials
+### 1. Set Supabase Credentials
 
 ```bash
 # Add your Supabase credentials to Modal
-modal secret create supabase-credentials \
-  SUPABASE_HOST="YOUR_PROJECT.supabase.co" \
-  SUPABASE_PASSWORD="your-postgres-password"
+modal secret create supabase-secrets \
+  SUPABASE_URL="https://fabxmporizzqflnftavs.supabase.co" \
+  SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhYnhtcG9yaXp6cWZsbmZ0YXZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjIyNDQ5MTIsImV4cCI6MjAzNzgyMDkxMn0.UIEJiUNkLsW28tBHmG-RQDW-I5JNlJLt62CSk9D_qG8"
 ```
 
 ### 2. Deploy the Cron Job
@@ -26,7 +26,8 @@ The system now runs automatically every day at 2 AM UTC. New tweets will be:
 - ✅ Detected in Supabase
 - ✅ Given embeddings
 - ✅ Assigned to communities
-- ✅ Added to all cluster files
+- ✅ Added to organized data structure
+- ✅ Automatically added to existing topics (matched by similarity)
 
 ---
 
