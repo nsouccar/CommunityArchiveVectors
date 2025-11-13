@@ -1,0 +1,4 @@
+# Exclude large unused files
+public/data/new_topics_summary.json
+public/data/backups_original
+public/data/all_topics.json

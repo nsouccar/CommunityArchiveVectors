@@ -32,6 +32,18 @@ export async function GET(request: NextRequest) {
     }
 
     const data = await response.json()
+
+    // Enrich results with profile images from avatar_urls.json
+    if (data.results && Array.isArray(data.results)) {
+      data.results = data.results.map((result: any) => ({
+        ...result,
+        profile_image_url: result.username ? avatarUrls[result.username] || null : null,
+        parent_tweet_profile_image_url: result.parent_tweet_username
+          ? avatarUrls[result.parent_tweet_username] || null
+          : null,
+      }))
+    }
+
     return NextResponse.json(data)
   } catch (error) {
     console.error('Search proxy error:', error)
@@ -69,7 +81,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get parent tweet IDs for replies
-    const parentTweetIds = [...new Set(tweetsData?.filter(t => t.reply_to_tweet_id).map(t => t.reply_to_tweet_id) || [])]
+    const parentTweetIds = Array.from(new Set(tweetsData?.filter(t => t.reply_to_tweet_id).map(t => t.reply_to_tweet_id) || []))
 
     // Fetch parent tweets if any exist
     let parentTweetsMap = new Map()
@@ -83,10 +95,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Get unique account IDs (including parent tweet authors)
-    const allAccountIds = [...new Set([
+    const allAccountIds = Array.from(new Set([
       ...(tweetsData?.map(t => t.account_id) || []),
       ...(Array.from(parentTweetsMap.values()).map(t => t.account_id) || [])
-    ])]
+    ]))
 
     // Fetch account information
     const { data: accountsData, error: accountsError } = await supabase

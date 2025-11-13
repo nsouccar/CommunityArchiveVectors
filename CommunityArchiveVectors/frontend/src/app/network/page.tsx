@@ -12,6 +12,7 @@ export default function NetworkPage() {
   const [networkData, setNetworkData] = useState<any>(null)
   const [communityTopics, setCommunityTopics] = useState<any>(null)
   const [allTopics, setAllTopics] = useState<any>(null)
+  const [loadedYears, setLoadedYears] = useState<Set<string>>(new Set())
   const [communityNames, setCommunityNames] = useState<any>(null)
   const [stats, setStats] = useState({ year: '2012', users: 0, interactions: 0, communities: 0 })
   const [searchUsername, setSearchUsername] = useState('')
@@ -32,18 +33,26 @@ export default function NetworkPage() {
   const zoomToCommunityRef = useRef<((communityId: number) => void) | null>(null)
   const resetZoomRef = useRef<(() => void) | null>(null)
 
-  const fetchTopicTweets = async (tweetIds: string[]) => {
+  const fetchTopicTweets = async (tweetIds: string[], sampleTweets?: any[]) => {
     setLoadingTweets(true)
-    try {
-      const idsToFetch = tweetIds.slice(0, 50)
+    console.log('fetchTopicTweets called with:', { tweetIds: tweetIds.length, sampleTweets: sampleTweets?.length })
+    console.log('Sample tweet data:', sampleTweets?.[0])
 
-      // Fetch tweet data from Supabase via API
+    // Use sample tweets if provided (2024 approach)
+    if (sampleTweets && sampleTweets.length > 0) {
+      console.log('Using sample tweets:', sampleTweets)
+      setTopicTweets(sampleTweets)
+      setLoadingTweets(false)
+      return
+    }
+
+    // Otherwise, fetch from API (old approach for other years)
+    console.log('Fetching tweets from API for IDs:', tweetIds.slice(0, 50))
+    try {
       const response = await fetch('/api/search', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ tweetIds: idsToFetch }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tweetIds: tweetIds.slice(0, 50) })
       })
 
       if (!response.ok) {
@@ -51,13 +60,37 @@ export default function NetworkPage() {
       }
 
       const data = await response.json()
+      console.log('Fetched tweets from API:', data.tweets?.length)
       setTopicTweets(data.tweets || [])
     } catch (error) {
       console.error('Error fetching tweets:', error)
-      // Fall back to placeholder links if fetch fails
-      setTopicTweets(tweetIds.slice(0, 50).map(id => ({ id })))
-    } finally {
-      setLoadingTweets(false)
+      setTopicTweets([])
+    }
+
+    setLoadingTweets(false)
+  }
+
+  // Lazy load topics for a specific year
+  const loadYearTopics = async (year: string) => {
+    if (loadedYears.has(year)) {
+      console.log(`Topics for year ${year} already loaded`)
+      return
+    }
+
+    console.log(`Loading topics for year ${year}...`)
+    try {
+      const response = await fetch(`/data/topics_year_${year}_summary.json`)
+      const yearData = await response.json()
+
+      setAllTopics((prev: any) => ({
+        ...prev,
+        [year]: yearData
+      }))
+
+      setLoadedYears((prev) => new Set(Array.from(prev).concat(year)))
+      console.log(`✓ Loaded topics for year ${year}`)
+    } catch (err) {
+      console.warn(`Failed to load topics for year ${year}:`, err)
     }
   }
 
@@ -83,14 +116,8 @@ export default function NetworkPage() {
       })
       .catch(err => console.error('Error loading community topics:', err))
 
-    // Load all topics (new format - year/community/topics)
-    fetch('/data/all_topics.json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Loaded all topics data:', data)
-        setAllTopics(data)
-      })
-      .catch(err => console.error('Error loading all topics:', err))
+    // Initialize allTopics as empty object - will be populated on-demand
+    setAllTopics({})
 
     // Load community names
     fetch('/data/all_community_names.json')
@@ -119,6 +146,13 @@ export default function NetworkPage() {
       })
       .catch(err => console.error('Error loading temporal alignments:', err))
   }, [])
+
+  // Lazy load topics when year changes
+  useEffect(() => {
+    if (stats.year && allTopics !== null) {
+      loadYearTopics(stats.year)
+    }
+  }, [stats.year, allTopics])
 
   useEffect(() => {
     let interval: NodeJS.Timeout
@@ -309,7 +343,7 @@ export default function NetworkPage() {
         .filter((d: any) => d.community === highlightCommunity)
         .selectAll('image')
 
-      function blink() {
+      const blink = () => {
         highlightedImages
           .transition()
           .duration(800)
@@ -600,6 +634,9 @@ export default function NetworkPage() {
       .join('g')
       .attr('class', 'node-group')
       .style('cursor', 'pointer')
+      .on('click', function(event, d: any) {
+        window.location.href = `/network/${d.id}`
+      })
       .on('mouseover', function(event, d: any) {
         // Find all connected nodes
         const connectedNodes = new Set<string>()
@@ -1184,7 +1221,7 @@ export default function NetworkPage() {
                     const hasTopics = allTopics?.[stats.year]?.communities?.[String(communityId)]
                     const highConfTopics = hasTopics?.filter((t: any) => t.confidence === 'high') || []
                     const topicCount = highConfTopics.length
-                    const communityName = getCommunityName(stats.year, communityId)
+                    const communityName = getCommunityName(parseInt(stats.year), communityId)
 
                     return (
                       <button
@@ -1227,7 +1264,7 @@ export default function NetworkPage() {
             <div className="p-6 border-b border-white/20">
               <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-bold text-white">
-                  {getCommunityName(stats.year, selectedCommunity)}
+                  {getCommunityName(parseInt(stats.year), selectedCommunity)}
                 </h2>
                 <button
                   onClick={() => setSelectedCommunity(null)}
@@ -1261,7 +1298,7 @@ export default function NetworkPage() {
                         key={idx}
                         onClick={() => {
                           setSelectedTopic(topic)
-                          fetchTopicTweets(topic.tweet_ids?.slice(0, 50) || [])
+                          fetchTopicTweets(topic.tweet_ids?.slice(0, 50) || [], topic.sample_tweets)
                         }}
                         className="w-full text-left bg-black/30 rounded-lg p-4 border-l-4 border-purple-500 hover:bg-black/50 transition-colors cursor-pointer"
                       >
@@ -1390,18 +1427,19 @@ export default function NetworkPage() {
                           </div>
                           <div className="bg-black/20 rounded-lg p-4 border border-white/10">
                             <div className="flex items-center space-x-2 mb-2">
-                              {tweet.parent_tweet.all_account?.profile_image_url ? (
+                              {tweet.parent_tweet.all_account?.username && (
                                 <img
-                                  src={tweet.parent_tweet.all_account.profile_image_url}
+                                  src={tweet.parent_tweet.all_account.profile_image_url || `https://unavatar.io/x/${tweet.parent_tweet.all_account.username}`}
                                   alt={`@${tweet.parent_tweet.all_account?.username || 'unknown'}`}
                                   className="w-8 h-8 rounded-full"
                                   onError={(e) => {
                                     e.currentTarget.style.display = 'none';
-                                    e.currentTarget.nextElementSibling?.classList.remove('hidden');
+                                    const nextSibling = e.currentTarget.nextElementSibling as HTMLElement;
+                                    if (nextSibling) nextSibling.classList.remove('hidden');
                                   }}
                                 />
-                              ) : null}
-                              <div className={`w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold ${tweet.parent_tweet.all_account?.profile_image_url ? 'hidden' : ''}`}>
+                              )}
+                              <div className={`w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold ${tweet.parent_tweet.all_account?.username ? 'hidden' : ''}`}>
                                 {tweet.parent_tweet.all_account?.username?.[0]?.toUpperCase() || '?'}
                               </div>
                               <div>
@@ -1427,26 +1465,27 @@ export default function NetworkPage() {
                       {/* Tweet Header */}
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center space-x-2">
-                          {tweet.all_account?.profile_image_url ? (
+                          {(tweet.all_account?.username || tweet.username) && (
                             <img
-                              src={tweet.all_account.profile_image_url}
-                              alt={`@${tweet.all_account?.username || 'unknown'}`}
+                              src={tweet.all_account?.profile_image_url || `https://unavatar.io/x/${tweet.all_account?.username || tweet.username}`}
+                              alt={`@${tweet.all_account?.username || tweet.username || 'unknown'}`}
                               className="w-10 h-10 rounded-full"
                               onError={(e) => {
                                 e.currentTarget.style.display = 'none';
-                                e.currentTarget.nextElementSibling?.classList.remove('hidden');
+                                const nextSibling = e.currentTarget.nextElementSibling as HTMLElement;
+                                if (nextSibling) nextSibling.classList.remove('hidden');
                               }}
                             />
-                          ) : null}
-                          <div className={`w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold ${tweet.all_account?.profile_image_url ? 'hidden' : ''}`}>
-                            {tweet.all_account?.username?.[0]?.toUpperCase() || '?'}
+                          )}
+                          <div className={`w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold ${(tweet.all_account?.username || tweet.username) ? 'hidden' : ''}`}>
+                            {(tweet.all_account?.username || tweet.username)?.[0]?.toUpperCase() || '?'}
                           </div>
                           <div>
                             <div className="font-semibold text-white">
-                              @{tweet.all_account?.username || 'unknown'}
+                              @{tweet.all_account?.username || tweet.username || 'unknown'}
                             </div>
                             <div className="text-sm text-gray-400">
-                              {tweet.created_at ? new Date(tweet.created_at).toLocaleDateString('en-US', {
+                              {(tweet.created_at || tweet.timestamp) ? new Date(tweet.created_at || tweet.timestamp).toLocaleDateString('en-US', {
                                 year: 'numeric',
                                 month: 'short',
                                 day: 'numeric',
@@ -1458,7 +1497,7 @@ export default function NetworkPage() {
 
                       {/* Tweet Text */}
                       <p className="text-white leading-relaxed mb-3">
-                        {tweet.full_text || 'Tweet text unavailable'}
+                        {tweet.full_text || tweet.text || 'Tweet text unavailable'}
                       </p>
 
                       {/* Tweet Stats and Actions */}
@@ -1468,10 +1507,10 @@ export default function NetworkPage() {
                           <span>❤️ {tweet.favorite_count?.toLocaleString() || 0} likes</span>
                         </div>
                         <a
-                          href={`https://x.com/${tweet.all_account?.username || 'twitter'}/status/${tweet.tweet_id || tweet.id}`}
+                          href={`https://x.com/${tweet.all_account?.username || tweet.username || 'twitter'}/status/${tweet.tweet_id || tweet.id}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors text-sm font-medium"
+                          className="px-4 py-2 bg-blue-500 text-white rounded-none hover:bg-blue-600 transition-colors text-sm font-medium"
                         >
                           View on Twitter
                         </a>
