@@ -14,7 +14,7 @@ interface TutorialStep {
 const tutorialSteps: TutorialStep[] = [
   {
     title: "Welcome to the Constellation of People",
-    content: "This visualization shows 5.7 million tweets organized into communities and topics across 2012-2025. Explore how online conversations cluster and evolve over time.",
+    content: "This visualization shows the evolution of the <a href='https://www.community-archive.org/' target='_blank' class='text-amber-400 hover:underline'>Twitter Community Archive</a> -- an archive of 6.5 million tweets documenting a mysterious sub-culture on Twitter known as TPOT (This Part of Twitter). This visualization gives users the chance to wrap their heads around this community of people, and understand who they are and why they are connected.",
   },
   {
     title: "Selecting a Year",
@@ -182,14 +182,12 @@ export default function TutorialModal({ isOpen: externalIsOpen, onClose, onOpen,
             {/* Progress Bar - Retro */}
             <div className="w-full h-2 bg-black/50 border-y border-[#6b9080]/50">
               <div
-                className="h-full bg-[#d4a574] transition-all duration-300 ease-out relative"
+                className="h-full bg-[#d4a574] transition-all duration-300 ease-out"
                 style={{
                   width: `${progress}%`,
                   boxShadow: '0 0 10px rgba(212,165,116,0.6)'
                 }}
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[#d4a574]/30 to-transparent animate-shimmer" />
-              </div>
+              />
             </div>
 
             {/* Content */}
@@ -211,7 +209,7 @@ export default function TutorialModal({ isOpen: externalIsOpen, onClose, onOpen,
                     boxShadow: '0 0 10px rgba(107,144,128,0.2), inset 0 0 10px rgba(107,144,128,0.1)'
                   }}
                 >
-                  💡 LOOK FOR: <span className="font-semibold">{currentStepData.highlight}</span>
+                  LOOK FOR: <span className="font-semibold">{currentStepData.highlight}</span>
                 </div>
               )}
             </div>

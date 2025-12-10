@@ -350,6 +350,4 @@ for year, month, comm_id in communities_to_download:
 
 ---
 
-## Questions or Issues?
 
-Contact the dataset maintainer if you have questions or need help accessing the data.

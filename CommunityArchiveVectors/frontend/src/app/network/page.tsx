@@ -88,7 +88,7 @@ export default function NetworkPage() {
       }))
 
       setLoadedYears((prev) => new Set(Array.from(prev).concat(year)))
-      console.log(`✓ Loaded topics for year ${year}`)
+      console.log(`Loaded topics for year ${year}`)
     } catch (err) {
       console.warn(`Failed to load topics for year ${year}:`, err)
     }
@@ -241,7 +241,7 @@ export default function NetworkPage() {
           }
         })
 
-        console.log('📝 Built lineage names:', Object.keys(lineageToName).length, 'lineages named')
+        console.log('Built lineage names:', Object.keys(lineageToName).length, 'lineages named')
         setLineageNames(lineageToName)
       }
     }
@@ -367,14 +367,14 @@ export default function NetworkPage() {
   // Helper function to build lineage mapping from temporal alignments
   const buildLineageMapping = () => {
     if (!temporalAlignments || !temporalAlignments.alignments) {
-      console.log('⚠️ Cannot build lineage mapping:', {
+      console.log('Cannot build lineage mapping:', {
         temporalAlignments: temporalAlignments ? 'exists' : 'null',
         alignments: temporalAlignments?.alignments ? `${temporalAlignments.alignments.length} alignments` : 'null'
       })
       return null
     }
 
-    console.log('✅ Building lineage mapping from', temporalAlignments.alignments.length, 'alignments')
+    console.log('Building lineage mapping from', temporalAlignments.alignments.length, 'alignments')
 
     const mapping: Record<string, number> = {} // key: "year_comm" -> lineage ID
     let lineageCounter = 0
@@ -388,7 +388,7 @@ export default function NetworkPage() {
       connections[key1].push(key2)
     })
 
-    console.log('📊 Built connection graph with', Object.keys(connections).length, 'nodes')
+    console.log('Built connection graph with', Object.keys(connections).length, 'nodes')
 
     // Assign lineage IDs using DFS
     const visited = new Set<string>()
@@ -412,7 +412,7 @@ export default function NetworkPage() {
       }
     })
 
-    console.log('✨ Created', lineageCounter, 'lineages from', Object.keys(mapping).length, 'community-year pairs')
+    console.log('Created', lineageCounter, 'lineages from', Object.keys(mapping).length, 'community-year pairs')
     console.log('Sample lineage mappings:', Object.entries(mapping).slice(0, 5))
 
     return mapping
@@ -1004,7 +1004,7 @@ export default function NetworkPage() {
       {/* Top-left: Navigation & Title */}
       <div className="absolute top-6 left-6 z-20">
         <Link href="/" className="text-white hover:text-gray-200 transition-colors text-sm mb-4 inline-block">
-          ← Back to Search
+          Back to Search
         </Link>
         <h1 className={`text-4xl font-bold ${lugrasimo.className}`} style={{ color: '#ff0000' }}>
           Constellation of People
@@ -1106,14 +1106,14 @@ export default function NetworkPage() {
             disabled={!networkData || currentYear === 0}
             className="px-5 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
           >
-            ← Prev
+            Prev
           </button>
           <button
             onClick={handleNext}
             disabled={!networkData || currentYear >= (networkData?.years.length || 0) - 1}
             className="px-5 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold transition-all text-sm"
           >
-            Next →
+            Next
           </button>
           <button
             onClick={handleReset}
@@ -1306,10 +1306,10 @@ export default function NetworkPage() {
                         <p className="text-gray-300 text-sm mb-3">{topic.description}</p>
                         <div className="flex gap-4 text-xs">
                           <span className="text-gray-400">
-                            📊 {topic.num_tweets?.toLocaleString()} tweets
+                            {topic.num_tweets?.toLocaleString()} tweets
                           </span>
                           <span className="font-semibold text-green-400">
-                            ✓ high confidence
+                            high confidence
                           </span>
                         </div>
                       </button>
@@ -1503,8 +1503,8 @@ export default function NetworkPage() {
                       {/* Tweet Stats and Actions */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-4 text-sm text-gray-400">
-                          <span>🔄 {tweet.retweet_count?.toLocaleString() || 0} retweets</span>
-                          <span>❤️ {tweet.favorite_count?.toLocaleString() || 0} likes</span>
+                          <span>RT {tweet.retweet_count?.toLocaleString() || 0}</span>
+                          <span>Likes {tweet.favorite_count?.toLocaleString() || 0}</span>
                         </div>
                         <a
                           href={`https://x.com/${tweet.all_account?.username || tweet.username || 'twitter'}/status/${tweet.tweet_id || tweet.id}`}

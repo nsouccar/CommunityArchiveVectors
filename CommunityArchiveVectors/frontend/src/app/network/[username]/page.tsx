@@ -154,7 +154,7 @@ export default function UserProfilePage() {
           <h1 className="text-4xl font-bold mb-4" style={{ color: '#ff0000' }}>USER NOT FOUND</h1>
           <p className="retro-text-secondary mb-6" style={{ fontFamily: 'monospace' }}>@{username} IS NOT IN THE CONSTELLATION NETWORK</p>
           <Link href={returnYear ? `/?year=${returnYear}` : "/"} className="retro-button px-6 py-3">
-            ← BACK TO CONSTELLATION
+            BACK TO CONSTELLATION
           </Link>
         </div>
       </div>
@@ -171,7 +171,7 @@ export default function UserProfilePage() {
         {/* Navigation */}
         <div className="mb-8">
           <Link href={returnYear ? `/?year=${returnYear}` : "/"} className="retro-button px-6 py-3 inline-block">
-            ← BACK TO CONSTELLATION
+            BACK TO CONSTELLATION
           </Link>
         </div>
 

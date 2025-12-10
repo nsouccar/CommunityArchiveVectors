@@ -5,6 +5,9 @@ import { useSearchParams } from 'next/navigation'
 import { lugrasimo } from './fonts'
 import * as d3 from 'd3'
 import TutorialModal from '@/components/TutorialModal'
+import LoadingScreen from '@/components/LoadingScreen'
+import ProfileAvatar from '@/components/ProfileAvatar'
+import { useDataLoader } from '@/hooks/useDataLoader'
 import './retro.css'
 
 export default function Home() {
@@ -42,6 +45,43 @@ export default function Home() {
   // Tutorial modal state
   const [showTutorial, setShowTutorial] = useState(false)
 
+  // Load all data with caching
+  const { isLoading: isDataLoading, progress: loadingProgress, data: loadedData, error: loadError } = useDataLoader()
+
+  // Initialize state from loaded data
+  useEffect(() => {
+    if (loadedData) {
+      console.log('[Page] Initializing from loaded data...')
+      setNetworkData(loadedData.networkData)
+      setAvatarUrls(loadedData.avatarUrls)
+      setCommunityNames(loadedData.communityNames)
+      setCommunityTopics(loadedData.communityTopics)
+      setTemporalAlignments(loadedData.temporalAlignments)
+      setAllTopics(loadedData.allTopics)
+
+      // Mark all years as loaded since we pre-loaded everything
+      const years = Object.keys(loadedData.allTopics)
+      setLoadedYears(new Set(years))
+
+      // Initialize visualization - check for return year param first
+      if (loadedData.networkData?.years?.length > 0) {
+        let initialYearIndex = 0
+
+        // Check if we're returning from a profile page with a specific year
+        if (returnYearParam) {
+          const yearIndex = loadedData.networkData.years.findIndex((y: any) => y.year === returnYearParam)
+          if (yearIndex !== -1) {
+            initialYearIndex = yearIndex
+            setInitialYearSet(true)
+          }
+        }
+
+        setCurrentYear(initialYearIndex)
+        updateVisualization(initialYearIndex, loadedData.networkData, loadedData.avatarUrls)
+      }
+    }
+  }, [loadedData, returnYearParam])
+
   // Auto-open tutorial on first visit
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -53,40 +93,20 @@ export default function Home() {
     }
   }, [])
 
-  const fetchTopicTweets = async (tweetIds: string[], sampleTweets?: any[]) => {
+  const fetchTopicTweets = async (sampleTweets?: any[]) => {
     setLoadingTweets(true)
-    console.log('fetchTopicTweets called with:', { tweetIds: tweetIds.length, sampleTweets: sampleTweets?.length })
-    console.log('Sample tweet data:', sampleTweets?.[0])
 
-    // Use sample tweets if provided (2024 approach)
+    // Tweets are now embedded in topic JSON files as sample_tweets
     if (sampleTweets && sampleTweets.length > 0) {
-      console.log('Using sample tweets:', sampleTweets)
+      console.log('Using embedded sample tweets:', sampleTweets.length)
       setTopicTweets(sampleTweets)
       setLoadingTweets(false)
       return
     }
 
-    // Otherwise, fetch from API (old approach for other years)
-    console.log('Fetching tweets from API for IDs:', tweetIds.slice(0, 50))
-    try {
-      const response = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tweetIds: tweetIds.slice(0, 50) })
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch tweets')
-      }
-
-      const data = await response.json()
-      console.log('Fetched tweets from API:', data.tweets?.length)
-      setTopicTweets(data.tweets || [])
-    } catch (error) {
-      console.error('Error fetching tweets:', error)
-      setTopicTweets([])
-    }
-
+    // No sample tweets available for this topic
+    console.log('No sample tweets available for this topic')
+    setTopicTweets([])
     setLoadingTweets(false)
   }
 
@@ -108,64 +128,12 @@ export default function Home() {
       }))
 
       setLoadedYears((prev) => new Set(Array.from(prev).concat(year)))
-      console.log(`✓ Loaded topics for year ${year}`)
+      console.log(`Loaded topics for year ${year}`)
     } catch (err) {
       console.warn(`Failed to load topics for year ${year}:`, err)
     }
   }
 
-  useEffect(() => {
-    // Load network data
-    fetch('/network_animation_data.json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Loaded network data:', data.metadata)
-        setNetworkData(data)
-        if (data.years && data.years.length > 0) {
-          updateVisualization(0, data)
-        }
-      })
-      .catch(err => console.error('Error loading network data:', err))
-
-    // Load community topics (old format - keywords)
-    fetch('/community_topics.json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Loaded community topics:', data)
-        setCommunityTopics(data)
-      })
-      .catch(err => console.error('Error loading community topics:', err))
-
-    // Initialize allTopics as empty object - will be populated on-demand
-    setAllTopics({})
-
-    // Load community names
-    fetch('/data/all_community_names.json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Loaded community names:', data)
-        setCommunityNames(data)
-      })
-      .catch(err => console.error('Error loading community names:', err))
-
-    // Load avatar URLs
-    fetch('/avatar_urls.json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Loaded avatar URLs:', Object.keys(data).length)
-        setAvatarUrls(data)
-      })
-      .catch(err => console.error('Error loading avatar URLs:', err))
-
-    // Load temporal alignments
-    fetch('/community_temporal_alignments.json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Loaded temporal alignments:', data)
-        setTemporalAlignments(data)
-      })
-      .catch(err => console.error('Error loading temporal alignments:', err))
-  }, [])
 
   // Lazy load topics when year changes
   useEffect(() => {
@@ -273,7 +241,7 @@ export default function Home() {
           }
         })
 
-        console.log('📝 Built lineage names:', Object.keys(lineageToName).length, 'lineages named')
+        console.log('Built lineage names:', Object.keys(lineageToName).length, 'lineages named')
         setLineageNames(lineageToName)
       }
     }
@@ -399,14 +367,14 @@ export default function Home() {
   // Helper function to build lineage mapping from temporal alignments
   const buildLineageMapping = () => {
     if (!temporalAlignments || !temporalAlignments.alignments) {
-      console.log('⚠️ Cannot build lineage mapping:', {
+      console.log('Cannot build lineage mapping:', {
         temporalAlignments: temporalAlignments ? 'exists' : 'null',
         alignments: temporalAlignments?.alignments ? `${temporalAlignments.alignments.length} alignments` : 'null'
       })
       return null
     }
 
-    console.log('✅ Building lineage mapping from', temporalAlignments.alignments.length, 'alignments')
+    console.log('Building lineage mapping from', temporalAlignments.alignments.length, 'alignments')
 
     const mapping: Record<string, number> = {} // key: "year_comm" -> lineage ID
     let lineageCounter = 0
@@ -420,7 +388,7 @@ export default function Home() {
       connections[key1].push(key2)
     })
 
-    console.log('📊 Built connection graph with', Object.keys(connections).length, 'nodes')
+    console.log('Built connection graph with', Object.keys(connections).length, 'nodes')
 
     // Assign lineage IDs using DFS
     const visited = new Set<string>()
@@ -444,7 +412,7 @@ export default function Home() {
       }
     })
 
-    console.log('✨ Created', lineageCounter, 'lineages from', Object.keys(mapping).length, 'community-year pairs')
+    console.log('Created', lineageCounter, 'lineages from', Object.keys(mapping).length, 'community-year pairs')
     console.log('Sample lineage mappings:', Object.entries(mapping).slice(0, 5))
 
     return mapping
@@ -470,7 +438,7 @@ export default function Home() {
     return communityInfo?.name || `Community ${communityId}`
   }
 
-  const updateVisualization = (yearIndex: number, data: any) => {
+  const updateVisualization = (yearIndex: number, data: any, avatarUrlsParam?: Record<string, string>) => {
     if (!data || !data.years || yearIndex >= data.years.length || !svgRef.current) return
 
     const yearData = data.years[yearIndex]
@@ -481,10 +449,11 @@ export default function Home() {
       communities: yearData.num_communities
     })
 
-    renderNetwork(yearData)
+    // Pass avatarUrls to renderNetwork (use param if provided, otherwise state)
+    renderNetwork(yearData, avatarUrlsParam || avatarUrls)
   }
 
-  const renderNetwork = (yearData: any) => {
+  const renderNetwork = (yearData: any, avatarUrlsToUse: Record<string, string>) => {
     if (!svgRef.current) return
 
     // Use full window dimensions for spacey full-screen effect
@@ -845,9 +814,9 @@ export default function Home() {
         d3.selectAll('.tooltip-network').remove()
       })
 
-    // Add profile images from avatar URLs
+    // Add profile images from avatar URLs (fall back to unavatar.io)
     nodeGroup.append('image')
-      .attr('xlink:href', (d: any) => avatarUrls[d.id] || '')
+      .attr('href', (d: any) => avatarUrlsToUse[d.id] || `https://unavatar.io/x/${d.id}`)
       .attr('width', (d: any) => {
         const r = selectedUser && d.id === selectedUser
           ? Math.max(8, Math.min(d.degree, 20))
@@ -887,13 +856,19 @@ export default function Home() {
 
         return 1
       })
-      .on('error', function (this: any) {
-        // Fallback to colored circle if image fails to load
-        d3.select(this.parentNode).append('circle')
-          .attr('r', 8)
-          .attr('fill', '#666')
-          .attr('stroke', '#fff')
-          .attr('stroke-width', 2)
+      // Use native onerror handler - D3's .on('error') doesn't work reliably for SVG images
+      .each(function(this: SVGImageElement, d: any) {
+        const img = this
+        img.onerror = () => {
+          const currentHref = img.getAttribute('href') || ''
+          // If we haven't tried unavatar.io yet, try it as fallback
+          if (!currentHref.includes('unavatar.io')) {
+            img.setAttribute('href', `https://unavatar.io/x/${d.id}`)
+          } else {
+            // unavatar.io also failed - hide image and we'll rely on the border circle
+            img.style.opacity = '0'
+          }
+        }
       })
 
     // Add community-colored border circles
@@ -1009,6 +984,40 @@ export default function Home() {
     }
   }
 
+  // Show loading screen while data is being fetched and cached
+  if (isDataLoading) {
+    return <LoadingScreen progress={loadingProgress} />
+  }
+
+  // Show error state
+  if (loadError) {
+    return (
+      <div
+        className="fixed inset-0 flex flex-col items-center justify-center text-[#e8dcc8]"
+        style={{
+          backgroundImage: 'url(/stars.png)',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat'
+        }}
+      >
+        <h1 className="text-2xl font-bold mb-4" style={{ color: '#ff66ff' }}>
+          Error Loading Data
+        </h1>
+        <p className="text-sm opacity-80 mb-4" style={{ fontFamily: 'monospace' }}>
+          {loadError}
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 border border-[#ff66ff] text-[#ff66ff] hover:bg-[#ff66ff]/20"
+          style={{ fontFamily: 'monospace' }}
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="fixed inset-0 text-[#e8dcc8] overflow-hidden" style={{
       backgroundImage: 'url(/stars.png)',
@@ -1026,13 +1035,6 @@ export default function Home() {
       {/* Full-screen SVG Canvas */}
       <div className="absolute inset-0">
         <svg ref={svgRef} className="w-full h-full" style={{ background: 'transparent' }}></svg>
-
-        {/* Loading State */}
-        {!networkData && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-[#d4a574] text-xl">Loading constellation data...</div>
-          </div>
-        )}
       </div>
 
       {/* Overlay UI Elements */}
@@ -1138,21 +1140,21 @@ export default function Home() {
             disabled={!networkData}
             className={`retro-button px-5 py-2 text-sm ${isPlaying ? 'retro-button-active' : ''}`}
           >
-            {isPlaying ? '❚❚ PAUSE' : '▶ PLAY'}
+            {isPlaying ? '|| PAUSE' : '> PLAY'}
           </button>
           <button
             onClick={handlePrev}
             disabled={!networkData || currentYear === 0}
             className="retro-button px-5 py-2 text-sm"
           >
-            ← PREV
+            PREV
           </button>
           <button
             onClick={handleNext}
             disabled={!networkData || currentYear >= (networkData?.years.length || 0) - 1}
             className="retro-button px-5 py-2 text-sm"
           >
-            NEXT →
+            NEXT
           </button>
           <button
             onClick={handleReset}
@@ -1168,18 +1170,31 @@ export default function Home() {
       {showCommunitySidebar && networkData && allTopics && (
         <div className="absolute top-32 left-6 z-20 w-64 max-h-[calc(100vh-350px)] overflow-y-auto border-b-2 border-[#6b9080]">
           <div className={`${lugrasimo.className} bg-[#6b9080]/10 border-2 border-[#6b9080] rounded-none p-4`}>
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="retro-text-secondary text-sm font-bold" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>Communities ({stats.communities})</h3>
-              <button
-                onClick={() => setShowCommunitySidebar(false)}
-                className="text-gray-400 hover:text-[#d4a574] text-xs"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="space-y-2">
-              {(() => {
-                const yearData = networkData.years[currentYear]
+            {(() => {
+              const yearData = networkData.years[currentYear]
+
+              // Count communities with topics for the header
+              const communityIds = new Set<number>()
+              yearData.nodes.forEach((node: any) => communityIds.add(node.community))
+              const communitiesWithTopicsCount = Array.from(communityIds).filter((communityId: number) => {
+                const topics = allTopics?.[stats.year]?.communities?.[String(communityId)]
+                const highConfidenceTopics = topics?.filter((t: any) => t.confidence === 'high') || []
+                return highConfidenceTopics.length > 0
+              }).length
+
+              return (
+                <>
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="retro-text-secondary text-sm font-bold" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>Communities ({communitiesWithTopicsCount})</h3>
+                    <button
+                      onClick={() => setShowCommunitySidebar(false)}
+                      className="text-gray-400 hover:text-[#d4a574] text-xs"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {(() => {
 
                 if (viewMode === 'lineage' && temporalAlignments) {
                   // In lineage mode, show ALL lineages
@@ -1250,10 +1265,17 @@ export default function Home() {
                     )
                   })
                 } else {
-                  // Independent mode: show only current year's communities
+                  // Independent mode: show only current year's communities that have topics
                   const communityIds = new Set<number>()
                   yearData.nodes.forEach((node: any) => communityIds.add(node.community))
-                  const sortedCommunities = Array.from(communityIds).sort((a, b) => a - b)
+
+                  // Filter to only communities with high-confidence topics
+                  const communitiesWithTopics = Array.from(communityIds).filter((communityId: number) => {
+                    const topics = allTopics?.[stats.year]?.communities?.[String(communityId)]
+                    const highConfidenceTopics = topics?.filter((t: any) => t.confidence === 'high') || []
+                    return highConfidenceTopics.length > 0
+                  })
+                  const sortedCommunities = communitiesWithTopics.sort((a, b) => a - b)
 
                   return sortedCommunities.map((communityId: number) => {
                     const hasTopics = allTopics?.[stats.year]?.communities?.[String(communityId)]
@@ -1280,8 +1302,11 @@ export default function Home() {
                     )
                   })
                 }
-              })()}
-            </div>
+                    })()}
+                  </div>
+                </>
+              )
+            })()}
           </div>
         </div>
       )}
@@ -1333,7 +1358,7 @@ export default function Home() {
                         key={idx}
                         onClick={() => {
                           setSelectedTopic(topic)
-                          fetchTopicTweets(topic.tweet_ids?.slice(0, 50) || [], topic.sample_tweets)
+                          fetchTopicTweets(topic.sample_tweets)
                         }}
                         className="w-full text-left bg-[#6b9080]/10 border-2 border-[#6b89a8] rounded-none p-4 hover:bg-[#6b9080]/20 transition-colors cursor-pointer"
                       >
@@ -1455,25 +1480,16 @@ export default function Home() {
                         {tweet.parent_tweet && (
                           <div className="mb-4 pb-4 border-b-2 border-gray-700/30">
                             <div className="flex items-center space-x-2 mb-2">
-                              <span className="text-xs retro-text-secondary" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>└→ REPLYING TO:</span>
+                              <span className="text-xs retro-text-secondary" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>REPLYING TO:</span>
                             </div>
                             <div className="bg-black/40 p-4 border-2 border-gray-700/50">
                               <div className="flex items-center space-x-2 mb-2">
-                                {tweet.parent_tweet.all_account?.username && (
-                                  <img
-                                    src={tweet.parent_tweet.all_account.profile_image_url || `https://unavatar.io/x/${tweet.parent_tweet.all_account.username}`}
-                                    alt={`@${tweet.parent_tweet.all_account?.username || 'unknown'}`}
-                                    className="w-8 h-8 rounded-full"
-                                    onError={(e) => {
-                                      e.currentTarget.style.display = 'none';
-                                      const nextSibling = e.currentTarget.nextElementSibling as HTMLElement;
-                                      if (nextSibling) nextSibling.classList.remove('hidden');
-                                    }}
-                                  />
-                                )}
-                                <div className={`w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold ${tweet.parent_tweet.all_account?.username ? 'hidden' : ''}`}>
-                                  {tweet.parent_tweet.all_account?.username?.[0]?.toUpperCase() || '?'}
-                                </div>
+                                <ProfileAvatar
+                                  username={tweet.parent_tweet.all_account?.username}
+                                  displayName={tweet.parent_tweet.all_account?.account_display_name}
+                                  imageUrl={tweet.parent_tweet.all_account?.profile_image_url}
+                                  size="sm"
+                                />
                                 <div>
                                   <div className="font-semibold retro-text text-sm" style={{ fontFamily: 'monospace' }}>
                                     @{tweet.parent_tweet.all_account?.username || 'unknown'}
@@ -1497,21 +1513,12 @@ export default function Home() {
                         {/* Tweet Header */}
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center space-x-2">
-                            {(tweet.all_account?.username || tweet.username) && (
-                              <img
-                                src={tweet.all_account?.profile_image_url || `https://unavatar.io/x/${tweet.all_account?.username || tweet.username}`}
-                                alt={`@${tweet.all_account?.username || tweet.username || 'unknown'}`}
-                                className="w-10 h-10 rounded-full"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                  const nextSibling = e.currentTarget.nextElementSibling as HTMLElement;
-                                  if (nextSibling) nextSibling.classList.remove('hidden');
-                                }}
-                              />
-                            )}
-                            <div className={`w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold ${(tweet.all_account?.username || tweet.username) ? 'hidden' : ''}`}>
-                              {(tweet.all_account?.username || tweet.username)?.[0]?.toUpperCase() || '?'}
-                            </div>
+                            <ProfileAvatar
+                              username={tweet.all_account?.username || tweet.username}
+                              displayName={tweet.all_account?.account_display_name}
+                              imageUrl={tweet.all_account?.profile_image_url}
+                              size="md"
+                            />
                             <div>
                               <div className="font-semibold retro-text" style={{ fontFamily: 'monospace' }}>
                                 @{tweet.all_account?.username || tweet.username || 'unknown'}
@@ -1535,8 +1542,8 @@ export default function Home() {
                         {/* Tweet Stats and Actions */}
                         <div className="flex items-center justify-between">
                           <div className="flex items-center space-x-4 text-sm retro-text-secondary" style={{ fontFamily: 'monospace' }}>
-                            <span>↻ {tweet.retweet_count?.toLocaleString() || 0}</span>
-                            <span>♥ {tweet.favorite_count?.toLocaleString() || 0}</span>
+                            <span>RT {tweet.retweet_count?.toLocaleString() || 0}</span>
+                            <span>Likes {tweet.favorite_count?.toLocaleString() || 0}</span>
                           </div>
                           <a
                             href={`https://x.com/${tweet.all_account?.username || tweet.username || 'twitter'}/status/${tweet.tweet_id || tweet.id}`}
