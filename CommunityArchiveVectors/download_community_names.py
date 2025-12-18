@@ -17,7 +17,6 @@ def download_names(year: int):
     names_path = Path(f"/data/community_names_{year}.json")
 
     if not names_path.exists():
-        print(f"❌ No community names found for year {year}")
         return None
 
     with open(names_path, 'r') as f:

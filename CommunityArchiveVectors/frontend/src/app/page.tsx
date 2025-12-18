@@ -30,6 +30,7 @@ export default function Home() {
   const [selectedTopic, setSelectedTopic] = useState<any>(null)
   const [topicTweets, setTopicTweets] = useState<any[]>([])
   const [loadingTweets, setLoadingTweets] = useState(false)
+  const [visibleTweetsCount, setVisibleTweetsCount] = useState(10)
   const [userConnections, setUserConnections] = useState<Set<string>>(new Set())
   const [showCommunitySidebar, setShowCommunitySidebar] = useState(true)
   const [hoveredCommunity, setHoveredCommunity] = useState<number | null>(null)
@@ -337,31 +338,7 @@ export default function Home() {
         return 2
       })
 
-    // Add blinking animation for highlighted community
-    if (highlightCommunity !== null) {
-      const highlightedImages = nodeGroups
-        .filter((d: any) => d.community === highlightCommunity)
-        .selectAll('image')
-
-      const blink = () => {
-        highlightedImages
-          .transition()
-          .duration(800)
-          .attr('opacity', 0.6)
-          .transition()
-          .duration(800)
-          .attr('opacity', 1)
-          .on('end', function (d: any) {
-            // Continue blinking if still highlighted
-            if ((hoveredCommunity !== null && d.community === hoveredCommunity) ||
-              (selectedCommunity !== null && d.community === selectedCommunity)) {
-              d3.select(this).call(blink as any)
-            }
-          })
-      }
-
-      blink()
-    }
+    // Blinking animation removed for performance - opacity/stroke changes are sufficient
   }, [hoveredCommunity, selectedCommunity, selectedUser, userConnections])
 
   // Helper function to build lineage mapping from temporal alignments
@@ -561,16 +538,25 @@ export default function Home() {
         return topNodeIds.has(sourceId) && topNodeIds.has(targetId)
       })
 
+      // Also limit edges for performance - keep strongest connections
+      const MAX_EDGES = 8000
+      if (links.length > MAX_EDGES) {
+        links = links
+          .sort((a: any, b: any) => (b.weight || 1) - (a.weight || 1))
+          .slice(0, MAX_EDGES)
+      }
+
       nodes = topNodes
       console.log(`Reduced to ${nodes.length} nodes and ${links.length} edges`)
     }
 
     // Create force simulation
     const simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id((d: any) => d.id).distance(50))
-      .force('charge', d3.forceManyBody().strength(-100))
+      .force('link', d3.forceLink(links).id((d: any) => d.id).distance(50).iterations(1))
+      .force('charge', d3.forceManyBody().strength(-100).theta(0.9)) // Higher theta = faster but less accurate
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(8))
+      .force('collision', d3.forceCollide().radius(8).iterations(1)) // Single iteration
+      .alphaDecay(0.05) // Faster settling (default is 0.0228)
 
     simulationRef.current = simulation
 
@@ -935,6 +921,11 @@ export default function Home() {
         .attr('transform', (d: any) => `translate(${d.x},${d.y})`)
     })
 
+    // Stop simulation when it settles to save CPU
+    simulation.on('end', () => {
+      console.log('[Graph] Simulation settled')
+    })
+
     function dragstarted(event: any) {
       if (!event.active) simulation.alphaTarget(0.3).restart()
       event.subject.fx = event.subject.x
@@ -1077,8 +1068,8 @@ export default function Home() {
       </div>
 
       {/* Bottom-left: Username Search */}
-      <div className="absolute bottom-6 left-6 z-20 max-w-md">
-        <div className={`${lugrasimo.className} retro-box p-4`}>
+      <div className="absolute bottom-6 left-6 z-20">
+        <div className={`${lugrasimo.className} retro-box p-4`} style={{ minWidth: '320px' }}>
           <h3 className="retro-text-secondary text-sm font-bold mb-3" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>SEARCH USER</h3>
           <div className="flex gap-2">
             <input
@@ -1091,7 +1082,7 @@ export default function Home() {
                 }
               }}
               placeholder="ENTER USERNAME..."
-              className="flex-1 px-3 py-2 retro-input text-sm"
+              className="flex-1 px-3 py-2 retro-input text-sm min-w-0"
             />
             <button
               onClick={() => {
@@ -1100,25 +1091,13 @@ export default function Home() {
                 }
               }}
               disabled={!searchUsername.trim()}
-              className="retro-button px-4 py-2 text-sm"
+              className="retro-button px-4 py-2 text-sm whitespace-nowrap"
             >
               SEARCH
             </button>
-            {selectedUser && (
-              <button
-                onClick={() => {
-                  setSelectedUser(null)
-                  setSearchUsername('')
-                  setUserConnections(new Set())
-                }}
-                className="retro-button px-4 py-2 text-sm"
-              >
-                CLEAR
-              </button>
-            )}
           </div>
           {selectedUser && (
-            <div className="mt-3 p-3 retro-card">
+            <div className="mt-3 p-3 retro-card flex items-center justify-between gap-3">
               <p className="retro-text text-sm">
                 TRACKING: <span className="font-bold">@{selectedUser}</span>
                 {userConnections.size > 0 && (
@@ -1127,6 +1106,16 @@ export default function Home() {
                   </span>
                 )}
               </p>
+              <button
+                onClick={() => {
+                  setSelectedUser(null)
+                  setSearchUsername('')
+                  setUserConnections(new Set())
+                }}
+                className="retro-button px-3 py-1 text-xs whitespace-nowrap"
+              >
+                CLEAR
+              </button>
             </div>
           )}
         </div>
@@ -1294,7 +1283,9 @@ export default function Home() {
                             : 'bg-[#6b9080]/10 border-2 border-[#6b9080] hover:bg-[#6b9080]/20'
                           }`}
                       >
-                        <div className="font-semibold text-[#d4a574]">{communityName}</div>
+                        <div className="font-semibold text-[#d4a574]">
+                          <span className="opacity-60">[{communityId}]</span> {communityName}
+                        </div>
                         {topicCount > 0 && (
                           <div className="text-xs opacity-70">{topicCount} topics</div>
                         )}
@@ -1358,6 +1349,7 @@ export default function Home() {
                         key={idx}
                         onClick={() => {
                           setSelectedTopic(topic)
+                          setVisibleTweetsCount(10)
                           fetchTopicTweets(topic.sample_tweets)
                         }}
                         className="w-full text-left bg-[#6b9080]/10 border-2 border-[#6b89a8] rounded-none p-4 hover:bg-[#6b9080]/20 transition-colors cursor-pointer"
@@ -1450,7 +1442,7 @@ export default function Home() {
                 <div>
                   <h2 className="text-2xl font-bold retro-text uppercase">{selectedTopic.topic}</h2>
                   <p className="retro-text-secondary text-sm mt-1" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{selectedTopic.description}</p>
-                  <p className="retro-text-secondary text-xs mt-2" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{selectedTopic.num_tweets?.toLocaleString()} TWEETS TOTAL (SHOWING FIRST 50)</p>
+                  <p className="retro-text-secondary text-xs mt-2" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>{selectedTopic.num_tweets?.toLocaleString()} TWEETS TOTAL (SHOWING {Math.min(visibleTweetsCount, topicTweets.length)} OF {topicTweets.length} SAMPLES)</p>
                 </div>
                 <button
                   onClick={() => {
@@ -1471,7 +1463,7 @@ export default function Home() {
                   <div className="text-center retro-text-secondary py-8" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>LOADING TWEETS...</div>
                 ) : topicTweets.length > 0 ? (
                   <div className="space-y-4">
-                    {topicTweets.map((tweet: any, idx: number) => (
+                    {topicTweets.slice(0, visibleTweetsCount).map((tweet: any, idx: number) => (
                       <div
                         key={idx}
                         className="retro-card p-6 hover:border-[#6b9080] transition-all"
@@ -1556,6 +1548,16 @@ export default function Home() {
                         </div>
                       </div>
                     ))}
+                    {/* Load More Button */}
+                    {visibleTweetsCount < topicTweets.length && (
+                      <button
+                        onClick={() => setVisibleTweetsCount(prev => prev + 10)}
+                        className="w-full retro-button py-3 text-sm"
+                        style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}
+                      >
+                        LOAD MORE ({topicTweets.length - visibleTweetsCount} REMAINING)
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center retro-text-secondary py-8" style={{ fontFamily: 'monospace', letterSpacing: '0.05em' }}>NO TWEETS FOUND</div>
